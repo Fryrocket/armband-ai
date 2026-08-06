@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Safe auto-pull for armband-ai on the Pi.
 # Exit: 0 ok/skip · 1 local · 2 network · 3 rebase conflict
+# Log rotation default: gzip on (GIT_PULL_LOG_COMPRESS=0 to disable)
 # Env: GIT_PULL_LOG_MAX_BYTES (1MiB) GIT_PULL_LOG_KEEP (5) GIT_PULL_LOG_COMPRESS (1)
 set -euo pipefail
 

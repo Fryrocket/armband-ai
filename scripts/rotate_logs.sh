@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Rotate logs/*.log when over size; gzip archives by default.
+# Rotate logs/*.log when over size.
+# Default: gzip archives (.1.gz …). LOG_COMPRESS=0 for plain .1 .2 …
 # Env: LOG_DIR LOG_MAX_BYTES LOG_KEEP LOG_COMPRESS
 set -euo pipefail
 

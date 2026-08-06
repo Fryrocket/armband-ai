@@ -21,6 +21,8 @@ logging:
   file: "logs/mqtt_logger.log"
   max_bytes: 2097152
   backup_count: 5
+  # Default: rotated files are gzip'd (mqtt_logger.log.1.gz …).
+  # Set compress: false for plain .1 .2 … instead.
   compress: true
 
 calibration:
