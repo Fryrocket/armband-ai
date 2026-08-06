@@ -9,3 +9,6 @@ Type=oneshot
 WorkingDirectory=/home/pi/armband-ai
 User=pi
 ExecStart=/bin/bash /home/pi/armband-ai/scripts/git_auto_pull.sh
+# 0 = success or intentional skip (dirty / up-to-date)
+SuccessExitStatus=0
+# Non-zero exits appear in journal for debugging
