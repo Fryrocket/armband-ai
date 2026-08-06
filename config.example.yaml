@@ -20,3 +20,10 @@ logging:
 calibration:
   window_seconds: 180          # ± seconds around each Libre reading
   prefer_still: true           # prefer non-moving armband samples when available
+
+hailo:
+  # Confirmed silicon: HNC18BI11BH (Hailo-8 industrial, 26 TOPS)
+  # Run: python scripts/hailo_identify.py --save models/hailo_device.json
+  device_json: "models/hailo_device.json"
+  hef_path: ""                 # path to compiled .hef once you have a model
+  feature_window_minutes: 5    # default lookback for feature vectors
