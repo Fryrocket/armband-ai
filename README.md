@@ -4,6 +4,8 @@ Companion to [armband-ppg-940nm](https://github.com/Fryrocket/armband-ppg-940nm)
 
 **v0.4.0** – multi-feature OLS model, HEF-ready `HailoRunner`, quality-gated calibration, background inference service.
 
+**Hardware:** full dependency list → **[HARDWARE.md](HARDWARE.md)** (Pi 5 + AI HAT / Hailo-8 + armband BOM).
+
 ## What runs on the Pi
 
 | Service | Command |
@@ -15,7 +17,7 @@ Companion to [armband-ppg-940nm](https://github.com/Fryrocket/armband-ppg-940nm)
 ```bash
 git pull && source .venv/bin/activate
 cp -n config.example.yaml config.yaml
-python scripts/run_logger.py & 
+python scripts/run_logger.py &
 python scripts/run_inference.py &
 bash scripts/run_dashboard.sh
 ```
@@ -37,7 +39,7 @@ Inference prefers `models/multifeature.json` if present, else `models/baseline.j
 
 ## Hailo-8
 
-Silicon confirmed: **HNC18BI11BH** (26 TOPS).
+Silicon confirmed: **HNC18BI11BH** (26 TOPS). See [HARDWARE.md](HARDWARE.md).
 
 ```bash
 python scripts/hailo_identify.py --extended --save models/hailo_device.json
