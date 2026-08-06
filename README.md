@@ -10,6 +10,7 @@ Companion to [armband-ppg-940nm](https://github.com/Fryrocket/armband-ppg-940nm)
 | **[docs/HAILO_DRIVER.md](docs/HAILO_DRIVER.md)** | Driver / firmware / HailoRT install & diagnose |
 | **[docs/PIPELINE.md](docs/PIPELINE.md)** | MQTT → DB → features → quality → models → Hailo |
 | **[docs/LIBRE_FLOW.md](docs/LIBRE_FLOW.md)** | How to log Libre/fingerstick references |
+| **[docs/GIT_AUTO_PULL.md](docs/GIT_AUTO_PULL.md)** | Auto-pull exit codes & error-handling examples |
 
 ## SpO₂ convention
 
@@ -62,8 +63,11 @@ bash scripts/install_git_hooks.sh --timer  # also hourly auto-pull (user systemd
 Manual safe pull (skips if working tree is dirty):
 
 ```bash
-bash scripts/git_auto_pull.sh
+bash scripts/git_auto_pull.sh; echo exit=$?
 ```
+
+Exit codes: **0** ok/skip · **1** local · **2** network · **3** rebase conflict.  
+Examples & recovery: **[docs/GIT_AUTO_PULL.md](docs/GIT_AUTO_PULL.md)**.
 
 System-wide timer (edit paths in `systemd/armband-git-pull.service` first):
 
