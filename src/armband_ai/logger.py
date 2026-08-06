@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import logging
+import os
 import signal
 import sys
 from logging.handlers import RotatingFileHandler
@@ -17,9 +19,35 @@ from .db import init_db, insert_reading
 
 log = logging.getLogger("armband_ai.logger")
 
-# Default rotation for file logs (override via setup_logging kwargs / env later if needed)
 DEFAULT_LOG_MAX_BYTES = 2 * 1024 * 1024  # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 5
+
+
+def _gzip_namer(name: str) -> str:
+    """RotatingFileHandler namer: foo.log.1 → foo.log.1.gz"""
+    return name + ".gz"
+
+
+def _gzip_rotator(source: str, dest: str) -> None:
+    """Compress rotated file to dest (.gz)."""
+    try:
+        with open(source, "rb") as f_in, gzip.open(dest, "wb") as f_out:
+            while True:
+                chunk = f_in.read(1024 * 64)
+                if not chunk:
+                    break
+                f_out.write(chunk)
+        os.remove(source)
+    except OSError:
+        # Fall back to plain rename if gzip fails
+        try:
+            if not dest.endswith(".gz"):
+                os.replace(source, dest)
+            else:
+                plain = dest[:-3]
+                os.replace(source, plain)
+        except OSError:
+            pass
 
 
 def setup_logging(
@@ -28,6 +56,7 @@ def setup_logging(
     *,
     max_bytes: int = DEFAULT_LOG_MAX_BYTES,
     backup_count: int = DEFAULT_LOG_BACKUP_COUNT,
+    compress: bool = True,
 ) -> None:
     root = logging.getLogger()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
@@ -37,20 +66,20 @@ def setup_logging(
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Console (once)
-    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root.handlers):
+    if not any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        for h in root.handlers
+    ):
         ch = logging.StreamHandler(sys.stdout)
         ch.setFormatter(fmt)
         root.addHandler(ch)
 
-    # Rotating file (replace any previous file handlers for this path)
     if log_file:
         path = Path(log_file)
         if not path.is_absolute():
             path = ROOT / path
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Avoid duplicate handlers on re-entry
         for h in list(root.handlers):
             if isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == str(path):
                 root.removeHandler(h)
@@ -62,6 +91,9 @@ def setup_logging(
             backupCount=max(1, int(backup_count)),
             encoding="utf-8",
         )
+        if compress:
+            fh.namer = _gzip_namer
+            fh.rotator = _gzip_rotator
         fh.setFormatter(fmt)
         root.addHandler(fh)
 
@@ -96,8 +128,12 @@ class ArmbandLogger:
         if reason_code == 0 or str(reason_code) == "Success":
             topic = self.mqtt_cfg["topic"]
             client.subscribe(topic, qos=1)
-            log.info("Connected to %s:%s – subscribed to %s",
-                     self.mqtt_cfg["broker"], self.mqtt_cfg["port"], topic)
+            log.info(
+                "Connected to %s:%s – subscribed to %s",
+                self.mqtt_cfg["broker"],
+                self.mqtt_cfg["port"],
+                topic,
+            )
         else:
             log.error("MQTT connect failed: %s", reason_code)
 
@@ -123,7 +159,12 @@ class ArmbandLogger:
 
             log.info(
                 "#%d id=%d  bpm=%s  filt940=%s  moving=%s  boot=%s",
-                self._msg_count, row_id, bpm, filt940, moving, boot,
+                self._msg_count,
+                row_id,
+                bpm,
+                filt940,
+                moving,
+                boot,
             )
         except Exception:
             log.exception("Failed to store reading")
@@ -167,11 +208,15 @@ class ArmbandLogger:
 def main() -> None:
     cfg = load_config()
     log_cfg = cfg.get("logging") or {}
+    compress = log_cfg.get("compress", True)
+    if isinstance(compress, str):
+        compress = compress.strip().lower() in ("1", "true", "yes", "on")
     setup_logging(
         level=log_cfg.get("level", "INFO"),
         log_file=log_cfg.get("file"),
         max_bytes=int(log_cfg.get("max_bytes", DEFAULT_LOG_MAX_BYTES)),
         backup_count=int(log_cfg.get("backup_count", DEFAULT_LOG_BACKUP_COUNT)),
+        compress=bool(compress),
     )
     logger = ArmbandLogger(cfg)
     logger.start()

@@ -21,9 +21,9 @@ database:
 logging:
   level: "INFO"
   file: "logs/mqtt_logger.log"
-  # RotatingFileHandler (Python logger)
-  max_bytes: 2097152      # 2 MiB per file
-  backup_count: 5         # mqtt_logger.log.1 .. .5
+  max_bytes: 2097152      # 2 MiB per active file
+  backup_count: 5         # mqtt_logger.log.1.gz .. .5.gz
+  compress: true          # gzip rotated files
 
 calibration:
   window_seconds: 180
