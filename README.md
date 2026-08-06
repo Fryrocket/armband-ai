@@ -15,7 +15,7 @@ Companion to [armband-ppg-940nm](https://github.com/Fryrocket/armband-ppg-940nm)
 
 ## SpO₂ convention
 
-PPG `spo2` is an integer percent. **Values &lt; 0 (usually `-1`) mean invalid / not computed** and are ignored in feature averages. Schema and firmware may still carry the field for when SpO₂ is re-enabled on the armband.
+PPG `spo2` is an integer percent. **Values < 0 (usually `-1`) mean invalid / not computed** and are ignored in feature averages. Schema and firmware may still carry the field for when SpO₂ is re-enabled on the armband.
 
 ## Hailo-8 driver (short path)
 
@@ -80,6 +80,33 @@ python scripts/log_glucose.py 142 --notes "still"
 python scripts/calibrate.py --min-quality 60 --min-still 0.7
 python scripts/train_multifeature.py --min-quality 60
 ```
+
+### Quality gates (calibration)
+
+Calibration pairs are quality-gated before they enter a model. The default path already prefers still samples and applies a 0–100 heuristic score.
+
+**Recommended tighter gates** (especially under real contact noise and multi-day use):
+
+| Gate | Purpose | Suggested default |
+|------|---------|-------------------|
+| `min_quality` | Overall heuristic score | ≥ 60–65 |
+| `min_still_fraction` | Fraction of non-moving samples | ≥ 0.70 |
+| **Consecutive clean streak** | Sustained still *and* optically stable samples (low rolling CV / range) | ≥ 10–15 samples |
+| Optical CV / range / slope | Reject intermittent contact loss that still passes a simple `moving==0` check | CV ≲ 0.045, relative range ≲ 0.12, \|slope\| ≲ 2.5 |
+
+Prefer-still pairing alone can cherry-pick short clean snippets inside a noisy window. A **consecutive-clean** requirement forces a real sustained stable period before a Libre reading is accepted as a calibration pair.
+
+### Drift monitoring
+
+Within-window quality cannot see slow baseline shift (contact change, temperature, sensor aging). Track a **still-only rolling median** of `filt940` (e.g. every 1–2 hours) and compare it to the median at the last successful calibration:
+
+| \|\u0394 median\| vs last cal | Action |
+|--------------------------|--------|
+| ≳ 40 | Normal / mild warn |
+| ≳ 80 | Alert — consider re-calibration |
+| sustained large shift | Mark model stale; collect new still Libre pairs |
+
+Surface the current delta on the dashboard AI / Calibration tabs. Re-run `calibrate.py` / `train_multifeature.py` after an alert once you have fresh high-quality pairs.
 
 ## systemd
 
