@@ -8,13 +8,36 @@ This repository handles the **Raspberry Pi 5 + AI HAT (Hailo)** side of the syst
 - Persistent SQLite storage of every reading
 - **Live web dashboard** (graphs on phone)
 - **Calibration workflow** (Libre / fingerstick vs filt940 + baseline linear model)
-- Model training / inference on Hailo – *paused until exact board is known*
+- Model training / inference on Hailo-8
 
 ## Hardware
 
 - Raspberry Pi 5
-- Raspberry Pi AI HAT+ or AI HAT+ 2 (Hailo) – details pending
+- Raspberry Pi AI HAT+ (Hailo-8)
 - Network reachability to the armband’s MQTT broker (usually the Pi itself running Mosquitto)
+
+### Confirmed Hailo silicon (2026-08-06)
+
+Exact markings from the board:
+
+```
+HAILO
+HNC18B1 118H
+PHH808.00
+19DR12
+2322
+```
+
+This is the industrial-grade **Hailo-8** (official part number **HNC18BI11BH**):
+
+- 26 TOPS (INT8)
+- ~2.5 W typical
+- Dual ARM Cortex-M4F + large on-chip SRAM
+- PCIe Gen3
+- Industrial temperature range (–40 °C to +85 °C)
+- Date code 2322 (week 22, 2023)
+
+Note: Some Raspberry Pi AI HAT+ 13 TOPS (Hailo-8L) units ship with the same HNC18BI11BH marking for supply reasons. Run `hailortcli fw-control identify` (or the `--extended` variant) to confirm the live architecture reported by the firmware (`HAILO8` vs `HAILO8L`).
 
 ## Current Status (2026-08-06)
 
@@ -30,7 +53,7 @@ This repository handles the **Raspberry Pi 5 + AI HAT (Hailo)** side of the syst
 | Calibration pairing    | Done (± window, prefer-still)               |
 | Baseline linear model  | Done (numpy OLS, R² / MAE / RMSE)           |
 | systemd services       | Done (templates)                            |
-| Hailo model pipeline   | Paused – waiting on exact board             |
+| Hailo model pipeline   | Ready – silicon identified (Hailo-8)        |
 
 ### MQTT payload expected from firmware
 
@@ -150,11 +173,12 @@ sudo systemctl enable --now armband-dashboard
 - Scatter plot + fit line + R² / MAE / RMSE
 - Save baseline model
 
-## Next (when Hailo model is known)
+## Next steps (Hailo-8 now identified)
 
-1. Confirm exact board (`hailortcli fw-control identify`)
-2. Install / verify Hailo runtime on the Pi 5
-3. Decide what runs on the accelerator vs CPU (e.g. richer temporal model)
+1. Run `hailortcli fw-control identify` (and `--extended` if available) to confirm live architecture and serial.
+2. Install / verify Hailo runtime + TAPPAS / hailo-apps on the Pi 5.
+3. Decide what runs on the accelerator vs CPU (richer temporal models, PPG quality scoring, motion artifact rejection, multi-feature glucose estimators, etc.).
+4. Start with a simple HEF pipeline that consumes the MQTT stream / SQLite features.
 
 ## Related Repository
 
