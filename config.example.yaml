@@ -40,5 +40,8 @@ inference:
 
 hailo:
   device_json: "models/hailo_device.json"
+  # Set when you have a compiled HEF (see docs/HAILO_MODEL.md)
   hef_path: ""
+  # Optional z-score stats from scripts/train_mlp_onnx.py
+  norm_path: ""
   feature_window_minutes: 5

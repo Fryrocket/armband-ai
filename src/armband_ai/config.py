@@ -67,6 +67,7 @@ def load_config(path: str | Path | None = None) -> dict:
     inf.setdefault("interval_seconds", 30)
     inf.setdefault("window_minutes", 5)
     inf.setdefault("model_path", "models/baseline.json")
+    inf.setdefault("multifeature_path", "models/multifeature.json")
     if os.getenv("INFERENCE_INTERVAL") is not None:
         inf["interval_seconds"] = float(os.getenv("INFERENCE_INTERVAL"))
     if os.getenv("INFERENCE_WINDOW_MIN") is not None:
@@ -76,6 +77,11 @@ def load_config(path: str | Path | None = None) -> dict:
     hailo = config.setdefault("hailo", {})
     hailo.setdefault("device_json", "models/hailo_device.json")
     hailo.setdefault("hef_path", "")
+    hailo.setdefault("norm_path", "")
     hailo.setdefault("feature_window_minutes", 5)
+    if os.getenv("HAILO_HEF_PATH") is not None:
+        hailo["hef_path"] = os.getenv("HAILO_HEF_PATH")
+    if os.getenv("HAILO_NORM_PATH") is not None:
+        hailo["norm_path"] = os.getenv("HAILO_NORM_PATH")
 
     return config
