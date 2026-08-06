@@ -42,7 +42,7 @@ Silicon (photos): industrial **Hailo-8 / HNC18BI11BH (26 TOPS)** — confirm wit
 | Dashboard | `bash scripts/run_dashboard.sh` |
 
 ```bash
-git pull && source .venv/bin/activate
+git pull --rebase && source .venv/bin/activate
 cp -n config.example.yaml config.yaml
 python scripts/run_logger.py &
 python scripts/run_inference.py &
