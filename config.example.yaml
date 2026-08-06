@@ -1,0 +1,18 @@
+# Copy to config.yaml and edit for your Pi / network
+# cp config.example.yaml config.yaml
+
+mqtt:
+  broker: "localhost"          # or the Pi's own IP / hostname if broker is elsewhere
+  port: 1883
+  topic: "armband/ppg"         # must match firmware MQTT_TOPIC
+  client_id: "armband_ai_logger"
+  username: ""                 # leave empty if no auth
+  password: ""
+  keepalive: 60
+
+database:
+  path: "data/armband_data.db"
+
+logging:
+  level: "INFO"                # DEBUG | INFO | WARNING | ERROR
+  file: "logs/mqtt_logger.log" # set to null to disable file logging
