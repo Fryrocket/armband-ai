@@ -3,14 +3,16 @@ paho-mqtt>=2.0.0
 PyYAML>=6.0
 python-dotenv>=1.0.0
 
-# Data / analysis (later stages)
+# Data
 pandas>=2.0.0
 numpy>=1.24.0
 
-# Dashboard (phase 2)
-# streamlit>=1.30.0
-# plotly>=5.18.0
+# Dashboard
+streamlit>=1.30.0
+plotly>=5.18.0
+
+# Optional later
 # fastapi>=0.110.0
 # uvicorn>=0.27.0
 
-# Optional: Hailo runtime will be installed separately on the Pi
+# Hailo runtime is installed separately on the Pi
