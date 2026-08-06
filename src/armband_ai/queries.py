@@ -59,7 +59,7 @@ def count_readings(db_path: str | Path) -> int:
 
 def load_libre(db_path: str | Path) -> pd.DataFrame:
     """Return all Libre / reference glucose readings, oldest first."""
-    init_db(db_path)  # ensure table exists
+    init_db(db_path)
     with get_connection(db_path) as conn:
         df = pd.read_sql_query(
             "SELECT * FROM libre_readings ORDER BY recorded_at ASC",
@@ -76,3 +76,45 @@ def count_libre(db_path: str | Path) -> int:
     init_db(db_path)
     with get_connection(db_path) as conn:
         return conn.execute("SELECT COUNT(*) FROM libre_readings").fetchone()[0]
+
+
+def load_inference(
+    db_path: str | Path,
+    limit: int = 100,
+    minutes: Optional[int] = None,
+) -> pd.DataFrame:
+    """Return recent inference_results rows, oldest → newest within the slice."""
+    init_db(db_path)
+    with get_connection(db_path) as conn:
+        if minutes is not None:
+            sql = """
+                SELECT *
+                FROM inference_results
+                WHERE computed_at >= datetime('now', ?)
+                ORDER BY computed_at ASC
+            """
+            df = pd.read_sql_query(sql, conn, params=(f"-{minutes} minutes",))
+        else:
+            sql = """
+                SELECT *
+                FROM inference_results
+                ORDER BY id DESC
+                LIMIT ?
+            """
+            df = pd.read_sql_query(sql, conn, params=(limit,))
+            df = df.iloc[::-1].reset_index(drop=True)
+
+    if not df.empty and "computed_at" in df.columns:
+        df["computed_at"] = pd.to_datetime(df["computed_at"], utc=True)
+    return df
+
+
+def load_latest_inference(db_path: str | Path) -> Optional[dict]:
+    init_db(db_path)
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM inference_results ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)

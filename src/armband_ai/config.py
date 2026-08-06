@@ -51,4 +51,31 @@ def load_config(path: str | Path | None = None) -> dict:
     log["level"] = os.getenv("LOG_LEVEL", log.get("level", "INFO")).upper()
     log["file"] = os.getenv("LOG_FILE", log.get("file", "logs/mqtt_logger.log"))
 
+    # --- Calibration quality gates ---
+    cal = config.setdefault("calibration", {})
+    cal.setdefault("window_seconds", 180)
+    cal.setdefault("prefer_still", True)
+    cal.setdefault("min_quality", 50)
+    cal.setdefault("min_still_fraction", 0.6)
+    if os.getenv("CAL_MIN_QUALITY") is not None:
+        cal["min_quality"] = float(os.getenv("CAL_MIN_QUALITY"))
+    if os.getenv("CAL_MIN_STILL") is not None:
+        cal["min_still_fraction"] = float(os.getenv("CAL_MIN_STILL"))
+
+    # --- Inference service ---
+    inf = config.setdefault("inference", {})
+    inf.setdefault("interval_seconds", 30)
+    inf.setdefault("window_minutes", 5)
+    inf.setdefault("model_path", "models/baseline.json")
+    if os.getenv("INFERENCE_INTERVAL") is not None:
+        inf["interval_seconds"] = float(os.getenv("INFERENCE_INTERVAL"))
+    if os.getenv("INFERENCE_WINDOW_MIN") is not None:
+        inf["window_minutes"] = float(os.getenv("INFERENCE_WINDOW_MIN"))
+
+    # --- Hailo ---
+    hailo = config.setdefault("hailo", {})
+    hailo.setdefault("device_json", "models/hailo_device.json")
+    hailo.setdefault("hef_path", "")
+    hailo.setdefault("feature_window_minutes", 5)
+
     return config

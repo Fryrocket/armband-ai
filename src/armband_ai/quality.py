@@ -9,7 +9,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Optional
 
-from .features import WindowFeatures, features_from_db
+import pandas as pd
+
+from .features import WindowFeatures, extract_window_features, features_from_db
 
 
 @dataclass
@@ -99,6 +101,14 @@ def score_window(feats: WindowFeatures) -> QualityResult:
         reasons=reasons,
         features=feats.to_dict(),
     )
+
+
+def score_dataframe(df: pd.DataFrame) -> Optional[QualityResult]:
+    """Score an arbitrary PPG DataFrame (e.g. calibration candidate window)."""
+    feats = extract_window_features(df)
+    if feats is None:
+        return None
+    return score_window(feats)
 
 
 def score_from_db(db_path: str, minutes: int = 5) -> Optional[QualityResult]:

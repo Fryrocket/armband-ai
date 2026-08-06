@@ -1,4 +1,4 @@
-"""SQLite persistence for armband PPG + 940 nm readings and calibration data."""
+"""SQLite persistence for armband PPG + 940 nm readings, calibration, and inference."""
 
 from __future__ import annotations
 
@@ -41,6 +41,26 @@ CREATE TABLE IF NOT EXISTS libre_readings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_libre_recorded_at ON libre_readings(recorded_at);
+
+CREATE TABLE IF NOT EXISTS inference_results (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    computed_at         TEXT    NOT NULL,      -- UTC ISO when this row was written
+    window_minutes      REAL    NOT NULL,
+    n_samples           INTEGER,
+    quality_score       REAL,
+    quality_label       TEXT,
+    quality_reasons     TEXT,                  -- JSON list
+    filt940_mean        REAL,
+    still_fraction      REAL,
+    bpm_mean            REAL,
+    glucose_estimate    REAL,                  -- null if no baseline model
+    baseline_r2         REAL,
+    model_path          TEXT,
+    feature_json        TEXT,                  -- full WindowFeatures dict
+    source              TEXT    DEFAULT 'cpu_quality'  -- cpu_quality | hailo | ...
+);
+
+CREATE INDEX IF NOT EXISTS idx_inference_computed_at ON inference_results(computed_at);
 """
 
 
@@ -116,7 +136,6 @@ def insert_libre(
         recorded_at = now
 
     with get_connection(db_path) as conn:
-        # Ensure schema exists (safe to call repeatedly)
         conn.executescript(SCHEMA)
         cur = conn.execute(
             """
@@ -134,3 +153,55 @@ def delete_libre(db_path: str | Path, libre_id: int) -> bool:
         cur = conn.execute("DELETE FROM libre_readings WHERE id = ?", (libre_id,))
         conn.commit()
         return cur.rowcount > 0
+
+
+def insert_inference(
+    db_path: str | Path,
+    *,
+    window_minutes: float,
+    n_samples: int,
+    quality_score: Optional[float],
+    quality_label: Optional[str],
+    quality_reasons: Optional[list[str]],
+    filt940_mean: Optional[float],
+    still_fraction: Optional[float],
+    bpm_mean: Optional[float],
+    glucose_estimate: Optional[float],
+    baseline_r2: Optional[float],
+    model_path: Optional[str],
+    feature_json: Optional[dict[str, Any]],
+    source: str = "cpu_quality",
+) -> int:
+    """Persist one inference / quality snapshot."""
+    now = datetime.now(timezone.utc).isoformat()
+    with get_connection(db_path) as conn:
+        conn.executescript(SCHEMA)
+        cur = conn.execute(
+            """
+            INSERT INTO inference_results (
+                computed_at, window_minutes, n_samples,
+                quality_score, quality_label, quality_reasons,
+                filt940_mean, still_fraction, bpm_mean,
+                glucose_estimate, baseline_r2, model_path,
+                feature_json, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now,
+                float(window_minutes),
+                int(n_samples),
+                quality_score,
+                quality_label,
+                json.dumps(quality_reasons or [], ensure_ascii=False),
+                filt940_mean,
+                still_fraction,
+                bpm_mean,
+                glucose_estimate,
+                baseline_r2,
+                model_path,
+                json.dumps(feature_json or {}, ensure_ascii=False),
+                source,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid or 0
