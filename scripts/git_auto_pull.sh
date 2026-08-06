@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Safe auto-pull for armband-ai on the Pi.
 # Exit: 0 ok/skip · 1 local · 2 network · 3 rebase conflict
-# Log archives: GIT_PULL_LOG_COMPRESSION=gzip|zstd|none (default gzip)
-# Env: GIT_PULL_LOG_MAX_BYTES GIT_PULL_LOG_KEEP GIT_PULL_LOG_COMPRESSION
+# Log archives default: zstd (GIT_PULL_LOG_COMPRESSION=zstd|gzip|none)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,13 +20,13 @@ if [[ -n "${GIT_PULL_LOG_COMPRESSION:-}" ]]; then
 elif [[ "${GIT_PULL_LOG_COMPRESS:-1}" == "0" ]]; then
   LOG_COMPRESSION="none"
 else
-  LOG_COMPRESSION="gzip"
+  LOG_COMPRESSION="zstd"
 fi
 LOG_COMPRESSION="$(echo "$LOG_COMPRESSION" | tr '[:upper:]' '[:lower:]')"
 case "$LOG_COMPRESSION" in
-  zstd|zst) LOG_COMPRESSION="zstd" ;;
+  gzip|gz) LOG_COMPRESSION="gzip" ;;
   none|off|false|0) LOG_COMPRESSION="none" ;;
-  *) LOG_COMPRESSION="gzip" ;;
+  *) LOG_COMPRESSION="zstd" ;;
 esac
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }

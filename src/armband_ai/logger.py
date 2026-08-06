@@ -23,27 +23,27 @@ log = logging.getLogger("armband_ai.logger")
 
 DEFAULT_LOG_MAX_BYTES = 2 * 1024 * 1024  # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 5
+DEFAULT_LOG_COMPRESSION = "zstd"
 
 
 def _normalize_compression(value: Any, compress_flag: Any = True) -> str:
-    """Return 'gzip' | 'zstd' | 'none'. Default gzip when compression is enabled."""
+    """Return 'gzip' | 'zstd' | 'none'. Default zstd when compression is enabled."""
     if isinstance(compress_flag, str):
         flag = compress_flag.strip().lower() in ("1", "true", "yes", "on")
     else:
         flag = bool(compress_flag)
 
     if value is None:
-        return "gzip" if flag else "none"
+        return DEFAULT_LOG_COMPRESSION if flag else "none"
 
     s = str(value).strip().lower()
     if s in ("", "none", "off", "false", "0", "no"):
         return "none"
-    if s in ("zstd", "zst"):
+    if s in ("zstd", "zst", "true", "1", "yes", "on"):
         return "zstd"
-    if s in ("gzip", "gz", "true", "1", "yes", "on"):
+    if s in ("gzip", "gz"):
         return "gzip"
-    # Unknown → gzip if compress enabled else none
-    return "gzip" if flag else "none"
+    return DEFAULT_LOG_COMPRESSION if flag else "none"
 
 
 def _make_namer(suffix: str) -> Callable[[str], str]:
@@ -80,7 +80,6 @@ def _zstd_rotator(source: str, dest: str) -> None:
             pass
         return
     try:
-        # zstd -f -q -o dest source  (and remove source on success)
         subprocess.run(
             [zstd, "-f", "-q", "-o", dest, source],
             check=True,
@@ -101,7 +100,7 @@ def setup_logging(
     *,
     max_bytes: int = DEFAULT_LOG_MAX_BYTES,
     backup_count: int = DEFAULT_LOG_BACKUP_COUNT,
-    compression: str = "gzip",
+    compression: str = DEFAULT_LOG_COMPRESSION,
 ) -> None:
     root = logging.getLogger()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
@@ -252,7 +251,7 @@ def main() -> None:
     cfg = load_config()
     log_cfg = cfg.get("logging") or {}
     method = _normalize_compression(
-        log_cfg.get("compression", log_cfg.get("compress", True)),
+        log_cfg.get("compression", log_cfg.get("compress", DEFAULT_LOG_COMPRESSION)),
         log_cfg.get("compress", True),
     )
     setup_logging(
