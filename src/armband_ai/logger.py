@@ -46,6 +46,16 @@ def _normalize_compression(value: Any, compress_flag: Any = True) -> str:
     return DEFAULT_LOG_COMPRESSION if flag else "none"
 
 
+def _warn_compression(msg: str) -> None:
+    """Best-effort warning before/during rotation (logging may be mid-setup)."""
+    line = f"armband_ai.logger: {msg}"
+    try:
+        log.warning("%s", msg)
+    except Exception:
+        pass
+    print(line, file=sys.stderr)
+
+
 def _make_namer(suffix: str) -> Callable[[str], str]:
     def namer(name: str) -> str:
         return name + suffix
@@ -62,23 +72,30 @@ def _gzip_rotator(source: str, dest: str) -> None:
                     break
                 f_out.write(chunk)
         os.remove(source)
-    except OSError:
+    except OSError as e:
+        _warn_compression(f"gzip rotation failed ({e}); keeping plain archive if possible")
         try:
             os.replace(source, dest[:-3] if dest.endswith(".gz") else dest)
-        except OSError:
-            pass
+        except OSError as e2:
+            _warn_compression(f"gzip fallback rename failed: {e2}")
 
 
 def _zstd_rotator(source: str, dest: str) -> None:
-    """Prefer `zstd` CLI; fall back to plain file if unavailable."""
+    """Prefer `zstd` CLI; fall back to plain file if unavailable or compress fails."""
     zstd = shutil.which("zstd")
+    plain = dest[: -len(".zst")] if dest.endswith(".zst") else dest
+
     if not zstd:
+        _warn_compression(
+            "zstd not on PATH – rotated log left uncompressed "
+            f"({plain}). Install: sudo apt install zstd"
+        )
         try:
-            plain = dest[: -len(".zst")] if dest.endswith(".zst") else dest
             os.replace(source, plain)
-        except OSError:
-            pass
+        except OSError as e:
+            _warn_compression(f"zstd fallback rename failed: {e}")
         return
+
     try:
         subprocess.run(
             [zstd, "-f", "-q", "-o", dest, source],
@@ -86,12 +103,15 @@ def _zstd_rotator(source: str, dest: str) -> None:
             capture_output=True,
         )
         os.remove(source)
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.CalledProcessError) as e:
+        _warn_compression(
+            f"zstd compress failed ({e}); leaving uncompressed archive if possible"
+        )
         try:
-            plain = dest[: -len(".zst")] if dest.endswith(".zst") else dest
-            os.replace(source, plain)
-        except OSError:
-            pass
+            if os.path.exists(source):
+                os.replace(source, plain)
+        except OSError as e2:
+            _warn_compression(f"zstd fallback rename failed: {e2}")
 
 
 def setup_logging(
@@ -122,20 +142,45 @@ def setup_logging(
         path = Path(log_file)
         if not path.is_absolute():
             path = ROOT / path
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(
+                f"armband_ai.logger: cannot create log dir {path.parent}: {e}",
+                file=sys.stderr,
+            )
+            raise
 
         for h in list(root.handlers):
             if isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == str(path):
                 root.removeHandler(h)
                 h.close()
 
-        fh = RotatingFileHandler(
-            path,
-            maxBytes=max(1024, int(max_bytes)),
-            backupCount=max(1, int(backup_count)),
-            encoding="utf-8",
-        )
         method = _normalize_compression(compression, True)
+        if method == "zstd" and not shutil.which("zstd"):
+            _warn_compression(
+                "compression=zstd but 'zstd' not found – "
+                "archives will stay uncompressed until: sudo apt install zstd"
+            )
+        elif method == "gzip" and not shutil.which("gzip"):
+            _warn_compression(
+                "compression=gzip but 'gzip' not found – archives will stay uncompressed"
+            )
+
+        try:
+            fh = RotatingFileHandler(
+                path,
+                maxBytes=max(1024, int(max_bytes)),
+                backupCount=max(1, int(backup_count)),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            print(
+                f"armband_ai.logger: cannot open log file {path}: {e}",
+                file=sys.stderr,
+            )
+            raise
+
         if method == "gzip":
             fh.namer = _make_namer(".gz")
             fh.rotator = _gzip_rotator

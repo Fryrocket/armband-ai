@@ -11,6 +11,7 @@ Companion to [armband-ppg-940nm](https://github.com/Fryrocket/armband-ppg-940nm)
 | **[docs/PIPELINE.md](docs/PIPELINE.md)** | MQTT → DB → features → quality → models → Hailo |
 | **[docs/LIBRE_FLOW.md](docs/LIBRE_FLOW.md)** | How to log Libre/fingerstick references |
 | **[docs/GIT_AUTO_PULL.md](docs/GIT_AUTO_PULL.md)** | Auto-pull exit codes & error-handling examples |
+| **[docs/LOG_ROTATION.md](docs/LOG_ROTATION.md)** | Log rotation, zstd/gzip, fallbacks |
 
 ## SpO₂ convention
 
@@ -20,7 +21,7 @@ PPG `spo2` is an integer percent. **Values &lt; 0 (usually `-1`) mean invalid / 
 
 ```bash
 sudo apt update && sudo apt full-upgrade -y
-sudo apt install -y dkms hailo-all
+sudo apt install -y dkms hailo-all zstd
 sudo reboot
 
 hailortcli fw-control identify
@@ -52,29 +53,22 @@ bash scripts/run_dashboard.sh
 
 ### Git auto-pull (hooks + optional timer)
 
-One-time on the Pi (after clone):
-
 ```bash
 cd ~/armband-ai
-bash scripts/install_git_hooks.sh          # pull.rebase=true + local .githooks
-bash scripts/install_git_hooks.sh --timer  # also hourly auto-pull (user systemd)
-```
-
-Manual safe pull (skips if working tree is dirty):
-
-```bash
+bash scripts/install_git_hooks.sh
+bash scripts/install_git_hooks.sh --timer   # optional hourly
 bash scripts/git_auto_pull.sh; echo exit=$?
 ```
 
 Exit codes: **0** ok/skip · **1** local · **2** network · **3** rebase conflict.  
-Examples & recovery: **[docs/GIT_AUTO_PULL.md](docs/GIT_AUTO_PULL.md)**.
+See **[docs/GIT_AUTO_PULL.md](docs/GIT_AUTO_PULL.md)**.
 
-System-wide timer (edit paths in `systemd/armband-git-pull.service` first):
+### Logs
+
+Default archive format is **zstd** (`logging.compression: zstd`). If `zstd` is missing, rotation still works and keeps a plain `.1` file — see **[docs/LOG_ROTATION.md](docs/LOG_ROTATION.md)**.
 
 ```bash
-sudo cp systemd/armband-git-pull.service systemd/armband-git-pull.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now armband-git-pull.timer
+sudo apt install -y zstd
 ```
 
 ## Libre + calibration
@@ -82,10 +76,7 @@ sudo systemctl enable --now armband-git-pull.timer
 See **[docs/LIBRE_FLOW.md](docs/LIBRE_FLOW.md)**.
 
 ```bash
-# Still + streaming, then:
 python scripts/log_glucose.py 142 --notes "still"
-# or use Calibration tab on the dashboard
-
 python scripts/calibrate.py --min-quality 60 --min-still 0.7
 python scripts/train_multifeature.py --min-quality 60
 ```
