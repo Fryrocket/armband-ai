@@ -75,6 +75,8 @@ sudo apt install -y zstd
 
 See **[docs/LIBRE_FLOW.md](docs/LIBRE_FLOW.md)**.
 
+**Quick tip:** Sit still 1–2 minutes with the armband streaming before logging a Libre/fingerstick reading. High still-fraction + stable optics produce the pairs that actually improve the model.
+
 ```bash
 python scripts/log_glucose.py 142 --notes "still"
 python scripts/calibrate.py --min-quality 60 --min-still 0.7
@@ -100,13 +102,69 @@ Prefer-still pairing alone can cherry-pick short clean snippets inside a noisy w
 
 Within-window quality cannot see slow baseline shift (contact change, temperature, sensor aging). Track a **still-only rolling median** of `filt940` (e.g. every 1–2 hours) and compare it to the median at the last successful calibration:
 
-| \|\u0394 median\| vs last cal | Action |
+| \|Δ median\| vs last cal | Action |
 |--------------------------|--------|
 | ≳ 40 | Normal / mild warn |
 | ≳ 80 | Alert — consider re-calibration |
 | sustained large shift | Mark model stale; collect new still Libre pairs |
 
 Surface the current delta on the dashboard AI / Calibration tabs. Re-run `calibrate.py` / `train_multifeature.py` after an alert once you have fresh high-quality pairs.
+
+## Hardening recommendations
+
+Practical improvements ranked by leverage. Most are incremental; the core pipeline already runs without them.
+
+### High priority (data quality & model health)
+
+1. **Consecutive-clean streak in quality / calibration**  
+   Add `max_clean_streak` and `clean_fraction` to `WindowFeatures`. Require a minimum streak of samples that are both still *and* optically stable (rolling CV / range) before accepting a calibration pair. Prevents prefer-still from accepting intermittent contact-loss windows.
+
+2. **Drift monitor (still-only median)**  
+   Background job or inference-loop side task: every 1–2 h compute median `filt940` over recent still samples; compare to the value stored at last successful calibration. Expose delta + status on the dashboard; optionally set a “model stale” flag when the alert threshold is crossed.
+
+3. **Tighter optical checks in `quality.py`**  
+   Lower CV threshold (~0.045), add relative peak-to-peak range penalty, lower slope threshold (~2.5). Motion heuristics already work; optical stability is the gap under real contact noise.
+
+4. **Light insert-time validation in `db.py`**  
+   Soft-check BPM (e.g. 35–220) and temp sanity on `insert_reading`. Log a warning and optionally clamp extremes rather than failing the insert. SpO₂ < 0 already handled correctly.
+
+### Medium priority (ops & UI)
+
+5. **Schema versioning**  
+   Add a `schema_version` table (or PRAGMA user_version) and small migration helpers before adding columns (e.g. lag-corrected estimates, Hailo scores, drift snapshots). `init_db` alone is fine while the schema is stable.
+
+6. **Dashboard delete confirmation**  
+   Calibration tab: require an explicit confirm step before `delete_libre` so a fat-fingered id does not drop a good reference.
+
+7. **Cache `count_readings`**  
+   Live tab currently counts on every refresh. Cache for 30–60 s (or only recompute every N auto-refreshes). Negligible today; avoids future cost as the table grows.
+
+8. **Log-compression fallback visibility**  
+   Rotation already falls back to plain `.1` when `zstd` is missing. Surface a one-line status on the dashboard (or a startup warning metric) so the fallback is not silent forever.
+
+### Lower priority (structure & polish)
+
+9. **Known-issues section in `docs/HAILO_DRIVER.md`**  
+   Firmware / DKMS version mismatches, Gen2 vs Gen3 link, venv + system-site-packages notes. Link to Pi / Hailo issues when they appear.
+
+10. **Full `WindowFeatures` at Libre timestamps for multi-feature training**  
+    `build_calibration_pairs` currently aggregates a reduced column set. Computing the full feature vector per pair unlocks a stronger multi-feature model once you have enough high-quality still readings.
+
+11. **Optional Hailo path in the inference loop**  
+    When `hailo.hef_path` is set and the runner is ready, prefer HEF output and fall back to CPU multi-feature / baseline. Scaffolding already exists in `HailoRunner`.
+
+12. **Retention / vacuum**  
+    On a 250 GB SSD you have headroom, but a simple retention policy (or periodic export + `VACUUM`) keeps the DB tidy after months of continuous logging.
+
+### Testing notes (simulation findings)
+
+Adversarial week-long simulations (contact-loss episodes, bad-still optical noise, temperature swings, slow baseline drift) showed:
+
+- Prefer-still + original quality gates kept nearly 100% of pairs but let drift and residual optical noise into the model (R² collapse over days).
+- Adding consecutive-clean + tighter optical checks produced real rejections of contaminated windows while preserving a usable pair set.
+- Drift monitoring (still-only median vs early baseline) correctly flagged multi-day baseline shift that no within-window score can see.
+
+These two mechanisms together close the main gaps between “clean desk data” and real wearable use.
 
 ## systemd
 
