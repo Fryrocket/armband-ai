@@ -20,6 +20,13 @@ logging:
 calibration:
   window_seconds: 180          # ± seconds around each Libre reading
   prefer_still: true           # prefer non-moving armband samples when available
+  min_quality: 50              # drop pairs with quality score below this (0-100)
+  min_still_fraction: 0.6      # drop pairs with still_fraction below this
+
+inference:
+  interval_seconds: 30         # background service loop period
+  window_minutes: 5            # feature / quality lookback
+  model_path: "models/baseline.json"
 
 hailo:
   # Confirmed silicon: HNC18BI11BH (Hailo-8 industrial, 26 TOPS)

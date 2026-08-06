@@ -1,0 +1,16 @@
+[Unit]
+Description=Armband inference / quality service
+After=network.target armband-logger.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/armband-ai
+Environment=PATH=/home/pi/armband-ai/.venv/bin:/usr/bin
+ExecStart=/home/pi/armband-ai/.venv/bin/python /home/pi/armband-ai/scripts/run_inference.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
