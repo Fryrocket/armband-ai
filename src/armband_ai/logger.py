@@ -6,7 +6,7 @@ import json
 import logging
 import signal
 import sys
-import time
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -17,8 +17,18 @@ from .db import init_db, insert_reading
 
 log = logging.getLogger("armband_ai.logger")
 
+# Default rotation for file logs (override via setup_logging kwargs / env later if needed)
+DEFAULT_LOG_MAX_BYTES = 2 * 1024 * 1024  # 2 MiB
+DEFAULT_LOG_BACKUP_COUNT = 5
 
-def setup_logging(level: str = "INFO", log_file: str | None = None) -> None:
+
+def setup_logging(
+    level: str = "INFO",
+    log_file: str | None = None,
+    *,
+    max_bytes: int = DEFAULT_LOG_MAX_BYTES,
+    backup_count: int = DEFAULT_LOG_BACKUP_COUNT,
+) -> None:
     root = logging.getLogger()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
@@ -27,19 +37,31 @@ def setup_logging(level: str = "INFO", log_file: str | None = None) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Console
-    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+    # Console (once)
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root.handlers):
         ch = logging.StreamHandler(sys.stdout)
         ch.setFormatter(fmt)
         root.addHandler(ch)
 
-    # Optional file
+    # Rotating file (replace any previous file handlers for this path)
     if log_file:
         path = Path(log_file)
         if not path.is_absolute():
             path = ROOT / path
         path.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(path, encoding="utf-8")
+
+        # Avoid duplicate handlers on re-entry
+        for h in list(root.handlers):
+            if isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == str(path):
+                root.removeHandler(h)
+                h.close()
+
+        fh = RotatingFileHandler(
+            path,
+            maxBytes=max(1024, int(max_bytes)),
+            backupCount=max(1, int(backup_count)),
+            encoding="utf-8",
+        )
         fh.setFormatter(fmt)
         root.addHandler(fh)
 
@@ -144,9 +166,12 @@ class ArmbandLogger:
 
 def main() -> None:
     cfg = load_config()
+    log_cfg = cfg.get("logging") or {}
     setup_logging(
-        level=cfg["logging"]["level"],
-        log_file=cfg["logging"].get("file"),
+        level=log_cfg.get("level", "INFO"),
+        log_file=log_cfg.get("file"),
+        max_bytes=int(log_cfg.get("max_bytes", DEFAULT_LOG_MAX_BYTES)),
+        backup_count=int(log_cfg.get("backup_count", DEFAULT_LOG_BACKUP_COUNT)),
     )
     logger = ArmbandLogger(cfg)
     logger.start()
