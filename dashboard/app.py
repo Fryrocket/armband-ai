@@ -17,7 +17,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-# Make src importable when launched directly
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -30,14 +29,13 @@ from armband_ai.quality import score_from_db
 from armband_ai.queries import (
     count_libre,
     count_readings,
+    load_inference,
     load_latest,
+    load_latest_inference,
     load_libre,
     load_recent,
 )
 
-# ---------------------------------------------------------------------------
-# Page config (must be first Streamlit call)
-# ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="Armband Live",
     page_icon="❤️",
@@ -67,10 +65,15 @@ def get_db_path() -> str:
     return str(p)
 
 
-def get_cal_defaults() -> tuple[int, bool]:
+def get_cal_defaults() -> tuple[int, bool, float, float]:
     cfg = load_config()
     cal = cfg.get("calibration", {})
-    return int(cal.get("window_seconds", 180)), bool(cal.get("prefer_still", True))
+    return (
+        int(cal.get("window_seconds", 180)),
+        bool(cal.get("prefer_still", True)),
+        float(cal.get("min_quality", 50)),
+        float(cal.get("min_still_fraction", 0.6)),
+    )
 
 
 def get_feature_minutes() -> int:
@@ -79,9 +82,6 @@ def get_feature_minutes() -> int:
     return int(hailo.get("feature_window_minutes", 5))
 
 
-# ===========================================================================
-# LIVE TAB
-# ===========================================================================
 def render_live(db_path: str) -> None:
     with st.sidebar:
         st.header("Live controls")
@@ -122,12 +122,12 @@ def render_live(db_path: str) -> None:
     status = "🟢 Moving" if moving else "⚪ Still"
     st.caption(f"Last update: `{received}` · {status} · boot #{latest.get('boot', '?')}")
 
-    # Live quality + baseline estimate
     q_minutes = get_feature_minutes()
     quality = score_from_db(db_path, minutes=q_minutes)
     model_path = PROJECT_ROOT / "models" / "baseline.json"
+    stored = load_latest_inference(db_path)
 
-    qcol, ecol = st.columns(2)
+    qcol, ecol, scol = st.columns(3)
     with qcol:
         if quality is not None:
             st.metric(
@@ -135,7 +135,7 @@ def render_live(db_path: str) -> None:
                 f"{quality.score:.0f}/100",
                 delta=quality.label,
             )
-            st.caption(" · ".join(quality.reasons[:3]))
+            st.caption(" · ".join(quality.reasons[:2]))
         else:
             st.caption("Quality: no window data yet")
 
@@ -146,13 +146,22 @@ def render_live(db_path: str) -> None:
                 est = model.predict(float(filt940))
                 note = ""
                 if quality is not None and quality.score < 50:
-                    note = " (low quality – treat estimate cautiously)"
+                    note = " (low quality)"
                 st.metric("Baseline glucose", f"{est:.0f} mg/dL")
                 st.caption(f"R²={model.r2:.2f}, n={model.n_pairs}{note}")
             except Exception:
-                st.caption("Baseline model present but failed to load")
+                st.caption("Baseline model failed to load")
         else:
-            st.caption("No baseline model yet – use Calibration tab")
+            st.caption("No baseline model yet")
+
+    with scol:
+        if stored and stored.get("glucose_estimate") is not None:
+            st.metric("Last stored estimate", f"{float(stored['glucose_estimate']):.0f} mg/dL")
+            st.caption(
+                f"service q={stored.get('quality_score')} · {stored.get('computed_at', '')[:19]}"
+            )
+        else:
+            st.caption("Inference service: no rows yet")
 
     df = load_recent(db_path, minutes=window_min)
     if df.empty:
@@ -175,75 +184,45 @@ def render_live(db_path: str) -> None:
 
     fig.add_trace(
         go.Scatter(
-            x=df["received_at"],
-            y=df["filt940"],
-            mode="lines",
-            name="filt940",
+            x=df["received_at"], y=df["filt940"], mode="lines", name="filt940",
             line=dict(width=2, color="#e74c3c"),
         ),
-        row=1,
-        col=1,
+        row=1, col=1,
     )
     if "raw940" in df.columns:
         fig.add_trace(
             go.Scatter(
-                x=df["received_at"],
-                y=df["raw940"],
-                mode="lines",
-                name="raw940",
-                line=dict(width=1, color="#e74c3c", dash="dot"),
-                opacity=0.4,
+                x=df["received_at"], y=df["raw940"], mode="lines", name="raw940",
+                line=dict(width=1, color="#e74c3c", dash="dot"), opacity=0.4,
             ),
-            row=1,
-            col=1,
+            row=1, col=1,
         )
-
     fig.add_trace(
         go.Scatter(
-            x=df["received_at"],
-            y=df["bpm"],
-            mode="lines+markers",
-            name="BPM",
-            line=dict(width=2, color="#3498db"),
-            marker=dict(size=4),
+            x=df["received_at"], y=df["bpm"], mode="lines+markers", name="BPM",
+            line=dict(width=2, color="#3498db"), marker=dict(size=4),
         ),
-        row=2,
-        col=1,
+        row=2, col=1,
     )
-
     spo2_plot = df["spo2"].where(df["spo2"] >= 0)
     fig.add_trace(
         go.Scatter(
-            x=df["received_at"],
-            y=spo2_plot,
-            mode="lines+markers",
-            name="SpO₂",
-            line=dict(width=2, color="#2ecc71"),
-            marker=dict(size=4),
+            x=df["received_at"], y=spo2_plot, mode="lines+markers", name="SpO₂",
+            line=dict(width=2, color="#2ecc71"), marker=dict(size=4),
         ),
-        row=3,
-        col=1,
+        row=3, col=1,
     )
-
     fig.add_trace(
         go.Scatter(
-            x=df["received_at"],
-            y=df["batt"],
-            mode="lines",
-            name="Battery",
+            x=df["received_at"], y=df["batt"], mode="lines", name="Battery",
             line=dict(width=2, color="#f39c12"),
         ),
-        row=4,
-        col=1,
+        row=4, col=1,
     )
 
     fig.update_layout(
-        height=780,
-        margin=dict(l=40, r=20, t=40, b=30),
-        showlegend=False,
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
+        height=780, margin=dict(l=40, r=20, t=40, b=30), showlegend=False,
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     )
     fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor="rgba(128,128,128,0.2)")
     fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor="rgba(128,128,128,0.2)")
@@ -256,11 +235,8 @@ def render_live(db_path: str) -> None:
             fig_m = go.Figure()
             fig_m.add_trace(
                 go.Scatter(
-                    x=df["received_at"],
-                    y=df["motion"],
-                    mode="lines",
-                    line=dict(color="#9b59b6", width=2),
-                    name="motion",
+                    x=df["received_at"], y=df["motion"], mode="lines",
+                    line=dict(color="#9b59b6", width=2), name="motion",
                 )
             )
             if "moving" in df.columns:
@@ -276,15 +252,11 @@ def render_live(db_path: str) -> None:
                         )
                     )
             fig_m.update_layout(
-                height=280,
-                margin=dict(l=20, r=20, t=20, b=20),
-                template="plotly_dark",
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                showlegend=False,
+                height=280, margin=dict(l=20, r=20, t=20, b=20),
+                template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)", showlegend=False,
             )
             st.plotly_chart(fig_m, use_container_width=True)
-
         with m2:
             st.subheader("Recent transitions")
             if "trans" in df.columns:
@@ -292,45 +264,25 @@ def render_live(db_path: str) -> None:
                 if not transitions.empty:
                     st.dataframe(
                         transitions[["received_at", "trans", "motion", "bpm"]].tail(15),
-                        use_container_width=True,
-                        hide_index=True,
+                        use_container_width=True, hide_index=True,
                     )
                 else:
                     st.caption("No motion transitions in this window.")
 
     with st.expander("Raw data (last 50)"):
         show_cols = [
-            c
-            for c in [
-                "received_at",
-                "bpm",
-                "spo2",
-                "temp",
-                "filt940",
-                "raw940",
-                "batt",
-                "motion",
-                "moving",
-                "trans",
-                "boot",
-                "conn_ms",
-            ]
-            if c in df.columns
+            c for c in [
+                "received_at", "bpm", "spo2", "temp", "filt940", "raw940",
+                "batt", "motion", "moving", "trans", "boot", "conn_ms",
+            ] if c in df.columns
         ]
-        st.dataframe(
-            df[show_cols].tail(50).iloc[::-1],
-            use_container_width=True,
-            hide_index=True,
-        )
+        st.dataframe(df[show_cols].tail(50).iloc[::-1], use_container_width=True, hide_index=True)
 
     if auto_refresh:
         time.sleep(10)
         st.rerun()
 
 
-# ===========================================================================
-# AI / FEATURES TAB
-# ===========================================================================
 def render_ai(db_path: str) -> None:
     st.subheader("Signal features & Hailo status")
     minutes = st.slider("Feature window (minutes)", 1, 30, get_feature_minutes(), key="ai_minutes")
@@ -360,31 +312,71 @@ def render_ai(db_path: str) -> None:
                 {
                     "vector": [round(float(x), 4) for x in vec.tolist()],
                     "keys": [
-                        "filt940_mean",
-                        "filt940_std",
-                        "filt940_min",
-                        "filt940_max",
-                        "filt940_slope",
-                        "raw940_mean",
-                        "bpm_mean",
-                        "bpm_std",
-                        "spo2_mean",
-                        "temp_mean",
-                        "motion_mean",
-                        "motion_max",
-                        "still_fraction",
-                        "moving_transitions",
-                        "batt_mean",
-                        "n_samples",
-                        "duration_s",
+                        "filt940_mean", "filt940_std", "filt940_min", "filt940_max",
+                        "filt940_slope", "raw940_mean", "bpm_mean", "bpm_std",
+                        "spo2_mean", "temp_mean", "motion_mean", "motion_max",
+                        "still_fraction", "moving_transitions", "batt_mean",
+                        "n_samples", "duration_s",
                     ],
                 },
                 indent=2,
             )
         )
-
         with st.expander("All feature fields"):
             st.json(feats.to_dict())
+
+    st.divider()
+    st.subheader("Inference service history")
+    hist = load_inference(db_path, limit=50)
+    if hist.empty:
+        st.caption(
+            "No inference_results yet. Start the service: "
+            "`python scripts/run_inference.py` or enable systemd unit."
+        )
+    else:
+        show = hist[
+            [
+                c for c in [
+                    "computed_at", "quality_score", "quality_label",
+                    "glucose_estimate", "filt940_mean", "still_fraction",
+                    "n_samples", "source",
+                ] if c in hist.columns
+            ]
+        ].iloc[::-1]
+        st.dataframe(show, use_container_width=True, hide_index=True)
+
+        if "glucose_estimate" in hist.columns and hist["glucose_estimate"].notna().any():
+            fig_i = go.Figure()
+            fig_i.add_trace(
+                go.Scatter(
+                    x=hist["computed_at"],
+                    y=hist["glucose_estimate"],
+                    mode="lines+markers",
+                    name="estimate",
+                    line=dict(color="#3498db", width=2),
+                )
+            )
+            fig_i.add_trace(
+                go.Scatter(
+                    x=hist["computed_at"],
+                    y=hist["quality_score"],
+                    mode="lines",
+                    name="quality",
+                    yaxis="y2",
+                    line=dict(color="#e74c3c", width=1, dash="dot"),
+                )
+            )
+            fig_i.update_layout(
+                height=320,
+                template="plotly_dark",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                yaxis=dict(title="mg/dL"),
+                yaxis2=dict(title="quality", overlaying="y", side="right", range=[0, 100]),
+                margin=dict(l=40, r=40, t=20, b=30),
+                legend=dict(orientation="h"),
+            )
+            st.plotly_chart(fig_i, use_container_width=True)
 
     st.divider()
     st.subheader("Hailo device")
@@ -406,33 +398,23 @@ def render_ai(db_path: str) -> None:
 
     if device_json.exists():
         try:
-            saved = json.loads(device_json.read_text(encoding="utf-8"))
-            st.json(saved)
+            st.json(json.loads(device_json.read_text(encoding="utf-8")))
         except Exception as e:
             st.warning(f"Could not read {device_json}: {e}")
     else:
         st.caption(
-            "No saved device identity yet. On the Pi run: "
-            "`python scripts/hailo_identify.py --extended --save models/hailo_device.json` "
-            "or use **Probe Hailo now**."
+            "No saved device identity yet. On the Pi run "
+            "`python scripts/hailo_identify.py --extended` or **Probe Hailo now**."
         )
 
     runner = HailoRunner(hef_path=hef_cfg or None)
     st.write("**HailoRunner status**")
     st.json(runner.status())
-    if not runner.ready:
-        st.caption(
-            "Inference not ready until HailoRT is installed, device is visible, "
-            "and `hailo.hef_path` points to a compiled `.hef`."
-        )
 
 
-# ===========================================================================
-# CALIBRATION TAB
-# ===========================================================================
 def render_calibration(db_path: str) -> None:
     init_db(db_path)
-    default_window, default_prefer = get_cal_defaults()
+    default_window, default_prefer, default_min_q, default_min_still = get_cal_defaults()
 
     st.subheader("Log a Libre / reference reading")
     with st.form("log_glucose_form", clear_on_submit=True):
@@ -451,15 +433,18 @@ def render_calibration(db_path: str) -> None:
 
     st.divider()
 
-    # Settings
-    c1, c2 = st.columns(2)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         window = st.slider("Pairing window ± seconds", 30, 600, default_window, step=30)
     with c2:
         prefer_still = st.checkbox("Prefer still samples", value=default_prefer)
+    with c3:
+        min_quality = st.slider("Min quality", 0, 100, int(default_min_q), step=5)
+    with c4:
+        min_still = st.slider("Min still fraction", 0.0, 1.0, float(default_min_still), step=0.05)
 
     libre_df = load_libre(db_path)
-    st.caption(f"Libre readings stored: **{len(libre_df)}** · PPG readings: **{count_readings(db_path)}**")
+    st.caption(f"Libre readings: **{len(libre_df)}** · PPG: **{count_readings(db_path)}**")
 
     if not libre_df.empty:
         with st.expander("All Libre readings"):
@@ -477,33 +462,34 @@ def render_calibration(db_path: str) -> None:
         db_path,
         window_seconds=window,
         prefer_still=prefer_still,
+        min_quality=float(min_quality),
+        min_still_fraction=float(min_still),
     )
 
-    st.subheader(f"Calibration pairs ({len(pairs)})")
+    st.subheader(f"Calibration pairs kept ({len(pairs)})")
 
     if pairs.empty:
         st.info(
-            "No pairs yet. Log Libre readings while the armband is streaming, "
-            "or widen the time window. Need data on both sides around the same time."
+            "No pairs passed the quality/still gates. Log Libre while still, "
+            "widen the window, or lower min quality / still fraction."
         )
         return
 
-    st.dataframe(
-        pairs[
-            [
-                "recorded_at",
-                "glucose_mgdl",
-                "filt940_mean",
-                "n_samples",
-                "still_fraction",
-                "time_offset_s",
-            ]
-        ],
-        use_container_width=True,
-        hide_index=True,
-    )
+    cols = [
+        c for c in [
+            "recorded_at", "glucose_mgdl", "filt940_mean", "n_samples",
+            "still_fraction", "quality_score", "quality_label", "time_offset_s",
+        ] if c in pairs.columns
+    ]
+    st.dataframe(pairs[cols], use_container_width=True, hide_index=True)
 
-    model = fit_baseline(pairs, window_seconds=window, prefer_still=prefer_still)
+    model = fit_baseline(
+        pairs,
+        window_seconds=window,
+        prefer_still=prefer_still,
+        min_quality=float(min_quality),
+        min_still_fraction=float(min_still),
+    )
 
     if model is None:
         st.warning("Need at least 2 pairs to fit a baseline model.")
@@ -517,7 +503,6 @@ def render_calibration(db_path: str) -> None:
 
     st.caption(f"glucose ≈ {model.slope:.6f} × filt940 + {model.intercept:.2f}")
 
-    # Scatter + fit line
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
@@ -525,33 +510,31 @@ def render_calibration(db_path: str) -> None:
             y=pairs["glucose_mgdl"],
             mode="markers",
             name="pairs",
-            marker=dict(size=10, color="#e74c3c"),
+            marker=dict(
+                size=10,
+                color=pairs["quality_score"] if "quality_score" in pairs.columns else "#e74c3c",
+                colorscale="RdYlGn",
+                cmin=0,
+                cmax=100,
+                showscale=True,
+                colorbar=dict(title="quality"),
+            ),
             text=pairs["recorded_at"].astype(str),
             hovertemplate="filt940=%{x:.1f}<br>glucose=%{y:.0f}<br>%{text}<extra></extra>",
         )
     )
-
     x_line = np.linspace(pairs["filt940_mean"].min(), pairs["filt940_mean"].max(), 50)
     y_line = model.predict(x_line)
     fig.add_trace(
         go.Scatter(
-            x=x_line,
-            y=y_line,
-            mode="lines",
-            name="baseline fit",
+            x=x_line, y=y_line, mode="lines", name="baseline fit",
             line=dict(color="#3498db", width=2),
         )
     )
-
     fig.update_layout(
-        height=420,
-        margin=dict(l=40, r=20, t=30, b=40),
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        xaxis_title="filt940 (mean in window)",
-        yaxis_title="Glucose (mg/dL)",
-        showlegend=True,
+        height=420, margin=dict(l=40, r=20, t=30, b=40),
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        xaxis_title="filt940 (mean in window)", yaxis_title="Glucose (mg/dL)", showlegend=True,
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -560,14 +543,9 @@ def render_calibration(db_path: str) -> None:
         model.save(out)
         st.success(f"Saved → {out}")
 
-    st.caption(
-        "⚠️ Experimental only. Not a medical device. Do not use for treatment decisions."
-    )
+    st.caption("⚠️ Experimental only. Not a medical device. Do not use for treatment decisions.")
 
 
-# ===========================================================================
-# MAIN
-# ===========================================================================
 def main() -> None:
     db_path = get_db_path()
     st.title("Armband")
@@ -576,10 +554,8 @@ def main() -> None:
 
     with tab_live:
         render_live(db_path)
-
     with tab_ai:
         render_ai(db_path)
-
     with tab_cal:
         render_calibration(db_path)
 
