@@ -12,47 +12,32 @@ Full system: **wearable armband** ([armband-ppg-940nm](https://github.com/Fryroc
 |------|----------------|-----------|
 | **Raspberry Pi 5** | 4 GB or 8 GB recommended | Yes |
 | **Official Pi 5 power supply** | 27 W USB-C (5 V / 5 A) | Yes |
-| **microSD** | Boot media (32 GB+) | Yes (boot) |
-| **NVMe / USB SSD ~250 GB** | **This build:** Pi 5 with **250 GB SSD**. Prefer for SQLite, logs, models, exports — less wear than SD, more room for long PPG history. | Strongly recommended |
+| **250 GB SSD (boot drive)** | **This build:** OS + project boot from **~250 GB SSD** (NVMe or USB). SQLite, logs, models live on the same disk by default. | Yes |
+| **microSD** | Optional; not required when booting from SSD | Optional |
 | **Raspberry Pi AI HAT+** | PCIe Hailo accelerator (13 or 26 TOPS) | Yes for NPU |
 | **Hailo silicon** | Confirmed markings → industrial **Hailo-8 (HNC18BI11BH, 26 TOPS)**. Verify with `hailortcli fw-control identify` (`Device Architecture: HAILO8` vs `HAILO8L`). | Yes for HEF |
 | **Active cooler** | Recommended with AI HAT under load | Strongly recommended |
 | **Network** | Same LAN as armband | Yes |
 | **MQTT broker** | Mosquitto on Pi (typical) | Yes |
 
-### Storage layout (250 GB SSD)
+### Storage / path syntax
 
-Keep the OS on microSD (or boot from SSD if you already do). Point **database + logs** at the SSD so continuous MQTT logging does not thrash the SD card.
-
-Example if the SSD is mounted at `/mnt/ssd`:
-
-```bash
-sudo mkdir -p /mnt/ssd/armband/{data,logs,models,exports}
-sudo chown -R $USER:$USER /mnt/ssd/armband
-```
-
-In `config.yaml`:
+Because the Pi **boots from the SSD**, the default relative paths in `config.example.yaml` are enough once the repo is cloned onto that disk:
 
 ```yaml
 database:
-  path: "/mnt/ssd/armband/data/armband_data.db"
-
+  path: "data/armband_data.db"          # → <repo>/data/...
 logging:
-  level: "INFO"
-  file: "/mnt/ssd/armband/logs/mqtt_logger.log"
-
+  file: "logs/mqtt_logger.log"
 inference:
-  model_path: "/mnt/ssd/armband/models/baseline.json"
-  multifeature_path: "/mnt/ssd/armband/models/multifeature.json"
-
+  model_path: "models/baseline.json"
+  multifeature_path: "models/multifeature.json"
 hailo:
-  device_json: "/mnt/ssd/armband/models/hailo_device.json"
-  hef_path: ""   # e.g. /mnt/ssd/armband/models/your_model.hef
+  device_json: "models/hailo_device.json"
+  hef_path: ""                          # absolute or relative .hef when ready
 ```
 
-Relative paths (`data/...`) still work and resolve under the repo root if you keep the project on the SSD too (`/mnt/ssd/armband-ai`).
-
-Check free space:
+Absolute paths are optional (e.g. `/home/pi/armband-ai/data/armband_data.db`). Path syntax can be confirmed after the machine is hooked up (`pwd`, `df -h`, `lsblk`).
 
 ```bash
 df -h
@@ -112,7 +97,7 @@ PCIe Gen3: `raspi-config` → Advanced → PCIe Speed → Gen 3 (or `dtparam=pci
 
 ```
 Armband (ESP32-C3) → Wi-Fi → MQTT (armband/ppg)
-  → Pi logger (SQLite on 250 GB SSD preferred)
+  → Pi logger (SQLite on boot SSD)
   → inference service (CPU quality + baseline/multifeature)
   → optional Hailo-8 HEF (after driver + compiled model)
   → Streamlit dashboard
@@ -124,8 +109,8 @@ Hailo is **not** on the armband (PCIe / power). NPU stays on the Pi AI HAT.
 
 ## E. Checklist
 
-- [ ] Pi 5 + 27 W PSU + AI HAT seated (GPIO connected)
-- [ ] **250 GB SSD** mounted; `database.path` / log paths point at SSD
+- [ ] Pi 5 boots from **250 GB SSD** + 27 W PSU + AI HAT seated
+- [ ] Repo on SSD; relative `data/` / `logs/` / `models/` OK (or absolute paths set)
 - [ ] `dkms` + `hailo-all` installed; reboot
 - [ ] `lspci | grep -i Hailo` and `lsmod | grep hailo` OK
 - [ ] `hailortcli fw-control identify` prints architecture

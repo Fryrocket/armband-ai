@@ -1,11 +1,10 @@
 # Copy to config.yaml and edit for your Pi / network
 # cp config.example.yaml config.yaml
 #
-# Pi 5 with 250 GB SSD: put SQLite + logs on the SSD (less SD wear).
-# Example absolute paths if SSD is at /mnt/ssd:
-#   database.path: "/mnt/ssd/armband/data/armband_data.db"
-#   logging.file:  "/mnt/ssd/armband/logs/mqtt_logger.log"
-# Relative paths resolve under the repo root (fine if the repo itself lives on the SSD).
+# This Pi boots from a ~250 GB SSD. Relative paths resolve under the repo root
+# (clone armband-ai onto the SSD and leave as-is). Absolute paths work too, e.g.:
+#   database.path: "/home/pi/armband-ai/data/armband_data.db"
+# Confirm with: pwd && df -h && lsblk
 
 mqtt:
   broker: "localhost"
