@@ -5,6 +5,8 @@ Usage:
   python scripts/calibrate.py
   python scripts/calibrate.py --window 120 --min-quality 60 --min-still 0.7
   python scripts/calibrate.py --save models/baseline.json
+
+Exit codes: 0 ok · 1 insufficient data / no pairs · 2 DB/IO failure
 """
 
 from __future__ import annotations
@@ -18,11 +20,17 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from armband_ai.calibration import build_calibration_pairs, fit_baseline
 from armband_ai.config import load_config, ROOT as PROJECT_ROOT
+from armband_ai.db import DatabaseError
 from armband_ai.queries import count_libre, count_readings
 
 
-def main() -> None:
-    cfg = load_config()
+def main() -> int:
+    try:
+        cfg = load_config()
+    except Exception as e:
+        print(f"ERROR: failed to load config: {e}", file=sys.stderr)
+        return 2
+
     cal = cfg.get("calibration") or {}
 
     parser = argparse.ArgumentParser(description="Calibration pairing + baseline fit")
@@ -63,14 +71,32 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.window <= 0:
+        print("ERROR: --window must be positive", file=sys.stderr)
+        return 1
+    if not (0.0 <= args.min_quality <= 100.0):
+        print("ERROR: --min-quality must be 0–100", file=sys.stderr)
+        return 1
+    if not (0.0 <= args.min_still <= 1.0):
+        print("ERROR: --min-still must be 0–1", file=sys.stderr)
+        return 1
+
     db_path = cfg["database"]["path"]
     if not Path(db_path).is_absolute():
         db_path = str(PROJECT_ROOT / db_path)
 
     prefer_still = not args.no_prefer_still
 
-    n_ppg = count_readings(db_path)
-    n_libre = count_libre(db_path)
+    try:
+        n_ppg = count_readings(db_path)
+        n_libre = count_libre(db_path)
+    except DatabaseError as e:
+        print(f"ERROR: database failure: {e}", file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"ERROR: cannot open database {db_path}: {e}", file=sys.stderr)
+        return 2
+
     print(f"PPG readings : {n_ppg}")
     print(f"Libre readings: {n_libre}")
     print(
@@ -81,21 +107,31 @@ def main() -> None:
     if n_libre < 2:
         print("Need at least 2 Libre readings to fit a baseline. Log more with:")
         print("  python scripts/log_glucose.py <mg/dL>")
-        return
+        return 1
 
-    pairs = build_calibration_pairs(
-        db_path,
-        window_seconds=args.window,
-        prefer_still=prefer_still,
-        min_quality=args.min_quality,
-        min_still_fraction=args.min_still,
-    )
+    try:
+        pairs = build_calibration_pairs(
+            db_path,
+            window_seconds=args.window,
+            prefer_still=prefer_still,
+            min_quality=args.min_quality,
+            min_still_fraction=args.min_still,
+        )
+    except DatabaseError as e:
+        print(f"ERROR: pairing failed: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:
+        print(f"ERROR: pairing failed: {e}", file=sys.stderr)
+        return 2
 
     print(f"Calibration pairs kept: {len(pairs)}")
 
     if pairs.empty:
-        print("No pairs passed the quality/still gates. Loosen --min-quality / --min-still or collect more still data.")
-        return
+        print(
+            "No pairs passed the quality/still gates. "
+            "Loosen --min-quality / --min-still or collect more still data."
+        )
+        return 1
 
     cols = [
         c
@@ -117,8 +153,13 @@ def main() -> None:
 
     if args.export_pairs:
         out = Path(args.export_pairs)
-        pairs.to_csv(out, index=False)
-        print(f"Pairs exported → {out}")
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            pairs.to_csv(out, index=False)
+            print(f"Pairs exported → {out}")
+        except OSError as e:
+            print(f"ERROR: cannot write pairs CSV {out}: {e}", file=sys.stderr)
+            return 2
 
     model = fit_baseline(
         pairs,
@@ -129,7 +170,7 @@ def main() -> None:
     )
     if model is None:
         print("Could not fit model (need ≥ 2 pairs).")
-        return
+        return 1
 
     print("Baseline model:  glucose ≈ slope * filt940 + intercept")
     print(f"  slope     = {model.slope:.6f}")
@@ -140,9 +181,19 @@ def main() -> None:
     print(f"  n_pairs   = {model.n_pairs}")
 
     save_path = args.save or str(PROJECT_ROOT / "models" / "baseline.json")
-    model.save(save_path)
-    print(f"\nModel saved → {save_path}")
+    try:
+        model.save(save_path)
+        print(f"\nModel saved → {save_path}")
+    except OSError as e:
+        print(f"ERROR: cannot save model to {save_path}: {e}", file=sys.stderr)
+        return 2
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        raise SystemExit(130)

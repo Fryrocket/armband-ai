@@ -9,6 +9,8 @@ Usage:
   python scripts/train_mlp_onnx.py --from-db --out-onnx models/glucose_mlp.onnx
 
 Requires: torch, onnx (and project deps for --from-db).
+
+Exit codes: 0 ok · 1 usage/data · 2 dependency/DB/IO failure
 """
 
 from __future__ import annotations
@@ -23,7 +25,6 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-# Stable contract — must match features.WindowFeatures.to_vector()
 FEATURE_KEYS = [
     "filt940_mean",
     "filt940_std",
@@ -46,30 +47,37 @@ FEATURE_KEYS = [
 
 
 def _pairs_from_db(min_quality: float, min_still: float, window: int):
-    from armband_ai.calibration import build_calibration_pairs
-    from armband_ai.config import load_config, ROOT as PROJECT_ROOT
-    from armband_ai.features import extract_window_features
-    from armband_ai.db import get_connection, init_db
-    import pandas as pd
     from datetime import timedelta
+
+    import pandas as pd
+
+    from armband_ai.calibration import build_calibration_pairs
+    from armband_ai.config import ROOT as PROJECT_ROOT
+    from armband_ai.config import load_config
+    from armband_ai.db import DatabaseError, get_connection, init_db
+    from armband_ai.features import extract_window_features
 
     cfg = load_config()
     db_path = cfg["database"]["path"]
     if not Path(db_path).is_absolute():
         db_path = str(PROJECT_ROOT / db_path)
 
-    # Base pairs (reduced aggregates) for gating + glucose labels
-    base = build_calibration_pairs(
-        db_path,
-        window_seconds=window,
-        prefer_still=True,
-        min_quality=min_quality,
-        min_still_fraction=min_still,
-    )
+    try:
+        base = build_calibration_pairs(
+            db_path,
+            window_seconds=window,
+            prefer_still=True,
+            min_quality=min_quality,
+            min_still_fraction=min_still,
+        )
+    except DatabaseError:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"build_calibration_pairs failed: {e}") from e
+
     if base.empty:
         return base
 
-    # Enrich with full WindowFeatures over the same preferred window
     init_db(db_path)
     with get_connection(db_path) as conn:
         ppg = pd.read_sql_query(
@@ -104,22 +112,33 @@ def _pairs_from_db(min_quality: float, min_still: float, window: int):
     return pd.DataFrame(rows)
 
 
-def _load_pairs_csv(path: Path) -> "pd.DataFrame":
+def _load_pairs_csv(path: Path):
     import pandas as pd
 
-    df = pd.read_csv(path)
+    if not path.exists():
+        raise FileNotFoundError(f"pairs CSV not found: {path}")
+    try:
+        df = pd.read_csv(path)
+    except Exception as e:
+        raise RuntimeError(f"failed to read CSV {path}: {e}") from e
+
+    if df.empty:
+        raise ValueError(f"pairs CSV is empty: {path}")
+
     missing = [k for k in FEATURE_KEYS if k not in df.columns]
     if missing:
-        # Allow reduced pair CSVs: fill missing with 0 and warn
-        print(f"WARNING: missing columns {missing} — filling with 0.0")
+        print(
+            f"WARNING: missing columns {missing} — filling with 0.0",
+            file=sys.stderr,
+        )
         for k in missing:
             df[k] = 0.0
     if "glucose_mgdl" not in df.columns:
-        raise SystemExit("pairs CSV must include glucose_mgdl")
+        raise ValueError("pairs CSV must include glucose_mgdl column")
     return df
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Train tiny MLP → ONNX for Hailo path")
     parser.add_argument("--from-db", action="store_true", help="Build pairs from SQLite")
     parser.add_argument("--pairs", type=str, default=None, help="CSV of pairs / features")
@@ -142,27 +161,57 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
+    if args.epochs < 1 or args.hidden < 2:
+        print("ERROR: --epochs >= 1 and --hidden >= 2 required", file=sys.stderr)
+        return 1
+    if not args.from_db and not args.pairs:
+        print("ERROR: provide --from-db or --pairs path", file=sys.stderr)
+        return 1
+
     try:
         import torch
         import torch.nn as nn
     except ImportError:
-        print("Install PyTorch first: pip install torch")
-        sys.exit(1)
+        print("ERROR: Install PyTorch first: pip install torch", file=sys.stderr)
+        return 2
 
-    if args.from_db:
-        pairs = _pairs_from_db(args.min_quality, args.min_still, args.window)
-    elif args.pairs:
-        pairs = _load_pairs_csv(Path(args.pairs))
-    else:
-        print("Provide --from-db or --pairs path")
-        sys.exit(1)
+    try:
+        if args.from_db:
+            pairs = _pairs_from_db(args.min_quality, args.min_still, args.window)
+        else:
+            pairs = _load_pairs_csv(Path(args.pairs))
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        from armband_ai.db import DatabaseError
+
+        if isinstance(e, DatabaseError):
+            print(f"ERROR: database failure: {e}", file=sys.stderr)
+        else:
+            print(f"ERROR: failed to load pairs: {e}", file=sys.stderr)
+        return 2
 
     if pairs is None or len(pairs) < 8:
-        print(f"Need ≥ 8 pairs for a tiny MLP (got {0 if pairs is None else len(pairs)}).")
-        sys.exit(1)
+        n = 0 if pairs is None else len(pairs)
+        print(
+            f"ERROR: need ≥ 8 quality-gated pairs for a tiny MLP (got {n}).",
+            file=sys.stderr,
+        )
+        return 1
 
-    X = pairs.reindex(columns=FEATURE_KEYS).fillna(0.0).to_numpy(dtype=np.float64)
-    y = pairs["glucose_mgdl"].to_numpy(dtype=np.float64)
+    try:
+        X = pairs.reindex(columns=FEATURE_KEYS).fillna(0.0).to_numpy(dtype=np.float64)
+        y = pairs["glucose_mgdl"].to_numpy(dtype=np.float64)
+        if not np.isfinite(X).all() or not np.isfinite(y).all():
+            print("ERROR: non-finite values in features or glucose labels", file=sys.stderr)
+            return 1
+    except Exception as e:
+        print(f"ERROR: failed to build feature matrix: {e}", file=sys.stderr)
+        return 1
 
     mean = X.mean(axis=0)
     std = X.std(axis=0)
@@ -178,65 +227,74 @@ def main() -> None:
             self.net = nn.Sequential(
                 nn.Linear(n_in, args.hidden),
                 nn.ReLU(),
-                nn.Linear(args.hidden, args.hidden // 2),
+                nn.Linear(args.hidden, max(2, args.hidden // 2)),
                 nn.ReLU(),
-                nn.Linear(args.hidden // 2, 1),
+                nn.Linear(max(2, args.hidden // 2), 1),
             )
 
         def forward(self, x):
             return self.net(x).squeeze(-1)
 
-    model = MLP()
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
-    loss_fn = nn.MSELoss()
-
-    xt = torch.tensor(Xn, dtype=torch.float32)
-    yt = torch.tensor(y, dtype=torch.float32)
-
-    model.train()
-    for epoch in range(1, args.epochs + 1):
-        opt.zero_grad()
-        pred = model(xt)
-        loss = loss_fn(pred, yt)
-        loss.backward()
-        opt.step()
-        if epoch % 100 == 0 or epoch == 1:
-            mae = (pred.detach() - yt).abs().mean().item()
-            print(f"epoch {epoch:4d}  mse={loss.item():.2f}  mae={mae:.2f}")
-
-    model.eval()
-    with torch.no_grad():
-        pred = model(xt).numpy()
-    mae = float(np.mean(np.abs(pred - y)))
-    rmse = float(np.sqrt(np.mean((pred - y) ** 2)))
-    print(f"\nFinal train MAE={mae:.2f}  RMSE={rmse:.2f}  n={len(y)}")
-    print("(In-sample metrics only — hold out pairs when you have enough data.)")
-
-    # ONNX export: input [batch, 17] normalized features
-    out_onnx = Path(args.out_onnx)
-    out_onnx.parent.mkdir(parents=True, exist_ok=True)
-    dummy = torch.zeros(1, n_in, dtype=torch.float32)
     try:
-        torch.onnx.export(
-            model,
-            dummy,
-            str(out_onnx),
-            input_names=["features"],
-            output_names=["glucose_mgdl"],
-            dynamic_axes={"features": {0: "batch"}, "glucose_mgdl": {0: "batch"}},
-            opset_version=17,
-        )
-    except TypeError:
-        # older torch
-        torch.onnx.export(
-            model,
-            dummy,
-            str(out_onnx),
-            input_names=["features"],
-            output_names=["glucose_mgdl"],
-            opset_version=13,
-        )
-    print(f"ONNX → {out_onnx}")
+        model = MLP()
+        opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+        loss_fn = nn.MSELoss()
+        xt = torch.tensor(Xn, dtype=torch.float32)
+        yt = torch.tensor(y, dtype=torch.float32)
+
+        model.train()
+        for epoch in range(1, args.epochs + 1):
+            opt.zero_grad()
+            pred = model(xt)
+            loss = loss_fn(pred, yt)
+            if not torch.isfinite(loss):
+                print(f"ERROR: non-finite loss at epoch {epoch}", file=sys.stderr)
+                return 2
+            loss.backward()
+            opt.step()
+            if epoch % 100 == 0 or epoch == 1:
+                mae = (pred.detach() - yt).abs().mean().item()
+                print(f"epoch {epoch:4d}  mse={loss.item():.2f}  mae={mae:.2f}")
+
+        model.eval()
+        with torch.no_grad():
+            pred = model(xt).numpy()
+        mae = float(np.mean(np.abs(pred - y)))
+        rmse = float(np.sqrt(np.mean((pred - y) ** 2)))
+        print(f"\nFinal train MAE={mae:.2f}  RMSE={rmse:.2f}  n={len(y)}")
+        print("(In-sample metrics only — hold out pairs when you have enough data.)")
+    except Exception as e:
+        print(f"ERROR: training failed: {e}", file=sys.stderr)
+        return 2
+
+    out_onnx = Path(args.out_onnx)
+    out_norm = Path(args.out_norm)
+    try:
+        out_onnx.parent.mkdir(parents=True, exist_ok=True)
+        dummy = torch.zeros(1, n_in, dtype=torch.float32)
+        try:
+            torch.onnx.export(
+                model,
+                dummy,
+                str(out_onnx),
+                input_names=["features"],
+                output_names=["glucose_mgdl"],
+                dynamic_axes={"features": {0: "batch"}, "glucose_mgdl": {0: "batch"}},
+                opset_version=17,
+            )
+        except TypeError:
+            torch.onnx.export(
+                model,
+                dummy,
+                str(out_onnx),
+                input_names=["features"],
+                output_names=["glucose_mgdl"],
+                opset_version=13,
+            )
+        print(f"ONNX → {out_onnx}")
+    except Exception as e:
+        print(f"ERROR: ONNX export failed: {e}", file=sys.stderr)
+        return 2
 
     norm = {
         "feature_keys": FEATURE_KEYS,
@@ -248,13 +306,22 @@ def main() -> None:
         "hidden": args.hidden,
         "note": "Apply z-score with these mean/std before HailoRunner.infer()",
     }
-    out_norm = Path(args.out_norm)
-    out_norm.parent.mkdir(parents=True, exist_ok=True)
-    out_norm.write_text(json.dumps(norm, indent=2), encoding="utf-8")
-    print(f"Norm  → {out_norm}")
+    try:
+        out_norm.parent.mkdir(parents=True, exist_ok=True)
+        out_norm.write_text(json.dumps(norm, indent=2), encoding="utf-8")
+        print(f"Norm  → {out_norm}")
+    except OSError as e:
+        print(f"ERROR: cannot write norm JSON {out_norm}: {e}", file=sys.stderr)
+        return 2
+
     print("\nNext: compile ONNX → HEF on x86_64 with Hailo DFC (hw_arch=hailo8).")
     print("See docs/HAILO_MODEL.md")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        raise SystemExit(130)

@@ -6,6 +6,8 @@ Examples:
   python scripts/log_glucose.py 142 --notes "post-meal 45 min"
   python scripts/log_glucose.py 118 --source fingerstick
   python scripts/log_glucose.py 135 --at "2026-08-06T14:30:00"
+
+Exit codes: 0 ok · 1 usage/validation · 2 DB/IO failure
 """
 
 from __future__ import annotations
@@ -19,12 +21,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from armband_ai.config import load_config, ROOT as PROJECT_ROOT
-from armband_ai.db import init_db, insert_libre
+from armband_ai.db import DatabaseError, init_db, insert_libre
 
 
 def parse_at(value: str) -> str:
-    """Accept ISO-ish strings; return UTC ISO."""
-    # Try a few common formats
+    """Accept ISO-ish strings; return UTC ISO. Raises ValueError on bad input."""
     for fmt in (
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%dT%H:%M",
@@ -34,19 +35,22 @@ def parse_at(value: str) -> str:
     ):
         try:
             dt = datetime.strptime(value, fmt)
-            # Assume local if no tz; store as UTC-naive ISO with Z-ish form
-            # For simplicity treat as UTC if no offset given
             return dt.replace(tzinfo=timezone.utc).isoformat()
         except ValueError:
             continue
-    # Last resort: fromisoformat
-    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise ValueError(
+            f"Cannot parse --at timestamp {value!r}. "
+            "Use ISO like 2026-08-06T14:30:00"
+        ) from e
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).isoformat()
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Log a reference glucose reading")
     parser.add_argument("glucose", type=float, help="Glucose in mg/dL")
     parser.add_argument("--source", default="libre", help="libre | fingerstick | other")
@@ -59,27 +63,52 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.glucose <= 0 or args.glucose > 600:
-        print(f"Warning: {args.glucose} mg/dL looks unusual – continuing anyway.")
+        print(
+            f"Warning: {args.glucose} mg/dL looks unusual – continuing anyway.",
+            file=sys.stderr,
+        )
 
-    cfg = load_config()
-    db_path = cfg["database"]["path"]
-    if not Path(db_path).is_absolute():
-        db_path = str(PROJECT_ROOT / db_path)
+    try:
+        recorded_at = parse_at(args.at) if args.at else None
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
 
-    init_db(db_path)
+    try:
+        cfg = load_config()
+        db_path = cfg["database"]["path"]
+        if not Path(db_path).is_absolute():
+            db_path = str(PROJECT_ROOT / db_path)
 
-    recorded_at = parse_at(args.at) if args.at else None
-    row_id = insert_libre(
-        db_path,
-        glucose_mgdl=args.glucose,
-        recorded_at=recorded_at,
-        source=args.source,
-        notes=args.notes,
-    )
+        init_db(db_path)
+        row_id = insert_libre(
+            db_path,
+            glucose_mgdl=args.glucose,
+            recorded_at=recorded_at,
+            source=args.source,
+            notes=args.notes,
+        )
+    except DatabaseError as e:
+        print(f"ERROR: database failure: {e}", file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"ERROR: filesystem failure: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:
+        print(f"ERROR: unexpected failure: {e}", file=sys.stderr)
+        return 2
 
     when = recorded_at or "now (UTC)"
-    print(f"Logged glucose {args.glucose} mg/dL  id={row_id}  at={when}  source={args.source}")
+    print(
+        f"Logged glucose {args.glucose} mg/dL  id={row_id}  "
+        f"at={when}  source={args.source}"
+    )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        raise SystemExit(130)
