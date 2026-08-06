@@ -1,19 +1,7 @@
 #!/usr/bin/env bash
 # Safe auto-pull for armband-ai on the Pi.
-# - Uses rebase
-# - Skips if the working tree is dirty
-# - Logs to logs/git_auto_pull.log with size-based rotation + gzip
-#
-# Exit codes:
-#   0  success or intentional skip
-#   1  local/repo error
-#   2  network / remote error
-#   3  rebase conflict or pull failure
-#
-# Rotation env (optional):
-#   GIT_PULL_LOG_MAX_BYTES   default 1048576 (1 MiB)
-#   GIT_PULL_LOG_KEEP        default 5  (git_auto_pull.log.1.gz .. .N.gz)
-#   GIT_PULL_LOG_COMPRESS    default 1  (0 = leave plain .1 .2 without gzip)
+# Exit: 0 ok/skip · 1 local · 2 network · 3 rebase conflict
+# Env: GIT_PULL_LOG_MAX_BYTES (1MiB) GIT_PULL_LOG_KEEP (5) GIT_PULL_LOG_COMPRESS (1)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -30,57 +18,34 @@ LOG_COMPRESS="${GIT_PULL_LOG_COMPRESS:-1}"
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
-_gzip_ok() { command -v gzip >/dev/null 2>&1; }
-
-# Compress path in place → path.gz (removes uncompressed). No-op if gzip missing.
 compress_file() {
   local src="$1"
-  [[ -f "$src" ]] || return 0
-  if [[ "$LOG_COMPRESS" != "1" ]]; then
-    return 0
-  fi
-  if ! _gzip_ok; then
-    return 0
-  fi
-  # Prefer gzip -f -n; leave .gz next to removed original
+  [[ -f "$src" && "$LOG_COMPRESS" == "1" ]] || return 0
+  command -v gzip >/dev/null 2>&1 || return 0
   gzip -f -n "$src" 2>/dev/null || true
 }
 
-# Size-based rotation: active → .1.gz, shift older .N.gz, drop beyond KEEP
 rotate_log_if_needed() {
-  local f="$1"
-  local max_bytes="$2"
-  local keep="$3"
-
+  local f="$1" max_bytes="$2" keep="$3"
   [[ -f "$f" ]] || return 0
-
-  local size=0
+  local size
   size="$(wc -c <"$f" 2>/dev/null | tr -d ' ' || echo 0)"
   [[ "$size" =~ ^[0-9]+$ ]] || size=0
-  if (( size < max_bytes )); then
-    return 0
-  fi
+  (( size < max_bytes )) && return 0
 
   local i
-  # Shift compressed archives: .$((i)).gz → .$((i+1)).gz
   for (( i=keep; i>=1; i-- )); do
-    if [[ -f "${f}.${i}.gz" ]]; then
-      if (( i == keep )); then
-        rm -f "${f}.${i}.gz" 2>/dev/null || true
-      else
-        mv -f "${f}.${i}.gz" "${f}.$((i + 1)).gz" 2>/dev/null || true
+    for ext in ".gz" ""; do
+      local p="${f}.${i}${ext}"
+      if [[ -f "$p" ]]; then
+        if (( i == keep )); then
+          rm -f "$p" 2>/dev/null || true
+        else
+          mv -f "$p" "${f}.$((i + 1))${ext}" 2>/dev/null || true
+        fi
       fi
-    fi
-    # Also shift any legacy uncompressed .N from older versions
-    if [[ -f "${f}.${i}" ]]; then
-      if (( i == keep )); then
-        rm -f "${f}.${i}" 2>/dev/null || true
-      else
-        mv -f "${f}.${i}" "${f}.$((i + 1))" 2>/dev/null || true
-      fi
-    fi
+    done
   done
-
   mv -f "$f" "${f}.1" 2>/dev/null || true
   compress_file "${f}.1"
 }
@@ -88,9 +53,7 @@ rotate_log_if_needed() {
 rotate_log_if_needed "$LOG" "$LOG_MAX_BYTES" "$LOG_KEEP"
 
 log() {
-  local line
-  line="$(ts) $*"
-  echo "$line" | tee -a "$LOG"
+  echo "$(ts) $*" | tee -a "$LOG"
 }
 
 fail() {
@@ -102,7 +65,7 @@ fail() {
 
 trap 'rc=$?; if [[ $rc -ne 0 ]]; then log "ERROR: unexpected failure (exit $rc) at line $LINENO"; fi' ERR
 
-log "auto-pull start (log_max=${LOG_MAX_BYTES}B keep=${LOG_KEEP} compress=${LOG_COMPRESS})"
+log "auto-pull start"
 
 if ! command -v git >/dev/null 2>&1; then
   fail 1 "git not found on PATH"

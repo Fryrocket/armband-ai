@@ -1,9 +1,7 @@
 # Copy to config.yaml and edit for your Pi / network
 # cp config.example.yaml config.yaml
 #
-# This Pi boots from a ~250 GB SSD. Relative paths resolve under the repo root
-# (clone armband-ai onto the SSD and leave as-is). Absolute paths work too, e.g.:
-#   database.path: "/home/pi/armband-ai/data/armband_data.db"
+# This Pi boots from a ~250 GB SSD. Relative paths resolve under the repo root.
 # Confirm with: pwd && df -h && lsblk
 
 mqtt:
@@ -21,9 +19,9 @@ database:
 logging:
   level: "INFO"
   file: "logs/mqtt_logger.log"
-  max_bytes: 2097152      # 2 MiB per active file
-  backup_count: 5         # mqtt_logger.log.1.gz .. .5.gz
-  compress: true          # gzip rotated files
+  max_bytes: 2097152
+  backup_count: 5
+  compress: true
 
 calibration:
   window_seconds: 180
