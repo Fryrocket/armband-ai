@@ -49,6 +49,30 @@ python scripts/run_inference.py &
 bash scripts/run_dashboard.sh
 ```
 
+### Git auto-pull (hooks + optional timer)
+
+One-time on the Pi (after clone):
+
+```bash
+cd ~/armband-ai
+bash scripts/install_git_hooks.sh          # pull.rebase=true + local .githooks
+bash scripts/install_git_hooks.sh --timer  # also hourly auto-pull (user systemd)
+```
+
+Manual safe pull (skips if working tree is dirty):
+
+```bash
+bash scripts/git_auto_pull.sh
+```
+
+System-wide timer (edit paths in `systemd/armband-git-pull.service` first):
+
+```bash
+sudo cp systemd/armband-git-pull.service systemd/armband-git-pull.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now armband-git-pull.timer
+```
+
 ## Libre + calibration
 
 See **[docs/LIBRE_FLOW.md](docs/LIBRE_FLOW.md)**.
