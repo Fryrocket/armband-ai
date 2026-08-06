@@ -2,11 +2,11 @@
 # cp config.example.yaml config.yaml
 
 mqtt:
-  broker: "localhost"          # or the Pi's own IP / hostname if broker is elsewhere
+  broker: "localhost"
   port: 1883
-  topic: "armband/ppg"         # must match firmware MQTT_TOPIC
+  topic: "armband/ppg"
   client_id: "armband_ai_logger"
-  username: ""                 # leave empty if no auth
+  username: ""
   password: ""
   keepalive: 60
 
@@ -14,23 +14,22 @@ database:
   path: "data/armband_data.db"
 
 logging:
-  level: "INFO"                # DEBUG | INFO | WARNING | ERROR
-  file: "logs/mqtt_logger.log" # set to null to disable file logging
+  level: "INFO"
+  file: "logs/mqtt_logger.log"
 
 calibration:
-  window_seconds: 180          # ± seconds around each Libre reading
-  prefer_still: true           # prefer non-moving armband samples when available
-  min_quality: 50              # drop pairs with quality score below this (0-100)
-  min_still_fraction: 0.6      # drop pairs with still_fraction below this
+  window_seconds: 180
+  prefer_still: true
+  min_quality: 50
+  min_still_fraction: 0.6
 
 inference:
-  interval_seconds: 30         # background service loop period
-  window_minutes: 5            # feature / quality lookback
+  interval_seconds: 30
+  window_minutes: 5
   model_path: "models/baseline.json"
+  multifeature_path: "models/multifeature.json"
 
 hailo:
-  # Confirmed silicon: HNC18BI11BH (Hailo-8 industrial, 26 TOPS)
-  # Run: python scripts/hailo_identify.py --save models/hailo_device.json
   device_json: "models/hailo_device.json"
-  hef_path: ""                 # path to compiled .hef once you have a model
-  feature_window_minutes: 5    # default lookback for feature vectors
+  hef_path: ""
+  feature_window_minutes: 5
