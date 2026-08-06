@@ -6,6 +6,7 @@ Run:  streamlit run dashboard/app.py --server.address 0.0.0.0 --server.port 8501
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -23,6 +24,9 @@ sys.path.insert(0, str(ROOT / "src"))
 from armband_ai.calibration import build_calibration_pairs, fit_baseline, BaselineModel
 from armband_ai.config import load_config, ROOT as PROJECT_ROOT
 from armband_ai.db import init_db, insert_libre, delete_libre
+from armband_ai.features import features_from_db
+from armband_ai.hailo import HailoRunner, identify, try_import_hailort
+from armband_ai.quality import score_from_db
 from armband_ai.queries import (
     count_libre,
     count_readings,
@@ -69,6 +73,12 @@ def get_cal_defaults() -> tuple[int, bool]:
     return int(cal.get("window_seconds", 180)), bool(cal.get("prefer_still", True))
 
 
+def get_feature_minutes() -> int:
+    cfg = load_config()
+    hailo = cfg.get("hailo", {})
+    return int(hailo.get("feature_window_minutes", 5))
+
+
 # ===========================================================================
 # LIVE TAB
 # ===========================================================================
@@ -112,15 +122,37 @@ def render_live(db_path: str) -> None:
     status = "🟢 Moving" if moving else "⚪ Still"
     st.caption(f"Last update: `{received}` · {status} · boot #{latest.get('boot', '?')}")
 
-    # Live estimate if a baseline model exists
+    # Live quality + baseline estimate
+    q_minutes = get_feature_minutes()
+    quality = score_from_db(db_path, minutes=q_minutes)
     model_path = PROJECT_ROOT / "models" / "baseline.json"
-    if model_path.exists() and filt940 is not None:
-        try:
-            model = BaselineModel.load(model_path)
-            est = model.predict(float(filt940))
-            st.info(f"Baseline estimate: **{est:.0f} mg/dL**  (R²={model.r2:.2f}, n={model.n_pairs})")
-        except Exception:
-            pass
+
+    qcol, ecol = st.columns(2)
+    with qcol:
+        if quality is not None:
+            st.metric(
+                f"Signal quality ({q_minutes} min)",
+                f"{quality.score:.0f}/100",
+                delta=quality.label,
+            )
+            st.caption(" · ".join(quality.reasons[:3]))
+        else:
+            st.caption("Quality: no window data yet")
+
+    with ecol:
+        if model_path.exists() and filt940 is not None:
+            try:
+                model = BaselineModel.load(model_path)
+                est = model.predict(float(filt940))
+                note = ""
+                if quality is not None and quality.score < 50:
+                    note = " (low quality – treat estimate cautiously)"
+                st.metric("Baseline glucose", f"{est:.0f} mg/dL")
+                st.caption(f"R²={model.r2:.2f}, n={model.n_pairs}{note}")
+            except Exception:
+                st.caption("Baseline model present but failed to load")
+        else:
+            st.caption("No baseline model yet – use Calibration tab")
 
     df = load_recent(db_path, minutes=window_min)
     if df.empty:
@@ -297,6 +329,105 @@ def render_live(db_path: str) -> None:
 
 
 # ===========================================================================
+# AI / FEATURES TAB
+# ===========================================================================
+def render_ai(db_path: str) -> None:
+    st.subheader("Signal features & Hailo status")
+    minutes = st.slider("Feature window (minutes)", 1, 30, get_feature_minutes(), key="ai_minutes")
+
+    feats = features_from_db(db_path, minutes=minutes)
+    quality = score_from_db(db_path, minutes=minutes)
+
+    if feats is None:
+        st.info("No PPG data in this window. Start the logger + armband.")
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        if quality is not None:
+            c1.metric("Quality", f"{quality.score:.0f}/100", quality.label)
+        c2.metric("Samples", f"{feats.n_samples}")
+        c3.metric("Still %", f"{feats.still_fraction:.0%}")
+        c4.metric("filt940 mean", f"{feats.filt940_mean:.1f}")
+
+        if quality is not None:
+            st.write("**Quality reasons**")
+            for r in quality.reasons:
+                st.write(f"- {r}")
+
+        st.write("**Feature vector** (model input order)")
+        vec = feats.to_vector()
+        st.code(
+            json.dumps(
+                {
+                    "vector": [round(float(x), 4) for x in vec.tolist()],
+                    "keys": [
+                        "filt940_mean",
+                        "filt940_std",
+                        "filt940_min",
+                        "filt940_max",
+                        "filt940_slope",
+                        "raw940_mean",
+                        "bpm_mean",
+                        "bpm_std",
+                        "spo2_mean",
+                        "temp_mean",
+                        "motion_mean",
+                        "motion_max",
+                        "still_fraction",
+                        "moving_transitions",
+                        "batt_mean",
+                        "n_samples",
+                        "duration_s",
+                    ],
+                },
+                indent=2,
+            )
+        )
+
+        with st.expander("All feature fields"):
+            st.json(feats.to_dict())
+
+    st.divider()
+    st.subheader("Hailo device")
+
+    device_json = PROJECT_ROOT / "models" / "hailo_device.json"
+    cfg = load_config()
+    hef_cfg = (cfg.get("hailo") or {}).get("hef_path") or ""
+
+    if st.button("Probe Hailo now"):
+        with st.spinner("Running hailortcli…"):
+            info = identify()
+            ok, msg = try_import_hailort()
+            payload = info.to_dict()
+            payload["bindings_ok"] = ok
+            payload["bindings_msg"] = msg
+            device_json.parent.mkdir(parents=True, exist_ok=True)
+            device_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            st.success("Probe complete")
+
+    if device_json.exists():
+        try:
+            saved = json.loads(device_json.read_text(encoding="utf-8"))
+            st.json(saved)
+        except Exception as e:
+            st.warning(f"Could not read {device_json}: {e}")
+    else:
+        st.caption(
+            "No saved device identity yet. On the Pi run: "
+            "`python scripts/hailo_identify.py --extended --save models/hailo_device.json` "
+            "or use **Probe Hailo now**."
+        )
+
+    runner = HailoRunner(hef_path=hef_cfg or None)
+    st.write("**HailoRunner status**")
+    st.json(runner.status())
+    if not runner.ready:
+        st.caption(
+            "Inference not ready until HailoRT is installed, device is visible, "
+            "and `hailo.hef_path` points to a compiled `.hef`."
+        )
+
+
+# ===========================================================================
 # CALIBRATION TAB
 # ===========================================================================
 def render_calibration(db_path: str) -> None:
@@ -441,10 +572,13 @@ def main() -> None:
     db_path = get_db_path()
     st.title("Armband")
 
-    tab_live, tab_cal = st.tabs(["Live", "Calibration"])
+    tab_live, tab_ai, tab_cal = st.tabs(["Live", "AI / Features", "Calibration"])
 
     with tab_live:
         render_live(db_path)
+
+    with tab_ai:
+        render_ai(db_path)
 
     with tab_cal:
         render_calibration(db_path)
