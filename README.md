@@ -8,7 +8,7 @@ This repository handles the **Raspberry Pi 5 + AI HAT (Hailo)** side of the syst
 - Persistent SQLite storage of every reading
 - **Live web dashboard** (graphs on phone)
 - **Calibration workflow** (Libre / fingerstick vs filt940 + baseline linear model)
-- Model training / inference on Hailo-8
+- Feature extraction + Hailo-8 device identity / inference stubs
 
 ## Hardware
 
@@ -53,7 +53,9 @@ Note: Some Raspberry Pi AI HAT+ 13 TOPS (Hailo-8L) units ship with the same HNC1
 | Calibration pairing    | Done (± window, prefer-still)               |
 | Baseline linear model  | Done (numpy OLS, R² / MAE / RMSE)           |
 | systemd services       | Done (templates)                            |
-| Hailo model pipeline   | Ready – silicon identified (Hailo-8)        |
+| Hailo device identify  | Done (`scripts/hailo_identify.py`)          |
+| Feature windows        | Done (`src/armband_ai/features.py`)         |
+| Hailo HEF inference    | Stub – waiting on compiled model            |
 
 ### MQTT payload expected from firmware
 
@@ -146,6 +148,42 @@ python scripts/export_csv.py --minutes 60
 python scripts/export_csv.py --all -o full.csv
 ```
 
+## Hailo pipeline (started)
+
+### 1. Identify the live device
+
+```bash
+python scripts/hailo_identify.py
+python scripts/hailo_identify.py --extended --save models/hailo_device.json
+```
+
+Uses `hailortcli fw-control identify` under the hood. Saves architecture, serial, firmware, and whether Python bindings are importable.
+
+### 2. Export feature windows
+
+Bridge between SQLite and any future model (CPU or Hailo HEF):
+
+```bash
+# Single recent window (JSON + vector to stdout)
+python scripts/export_features.py --minutes 5
+
+# Overlapping windows for offline training
+python scripts/export_features.py --rolling --window 120 --step 30 --lookback 60 \
+  -o exports/features_rolling.csv
+```
+
+Feature vector includes filt940 stats/slope, bpm, spo2, motion, still fraction, transitions, battery, etc. See `src/armband_ai/features.py`.
+
+### 3. Inference stub
+
+`src/armband_ai/hailo.py` provides:
+
+- `HailoDeviceInfo` / `identify()` / `identify_extended()`
+- `try_import_hailort()` – checks for Python bindings
+- `HailoRunner` – ready-check + placeholder `infer()` once a `.hef` exists
+
+Set `hailo.hef_path` in `config.yaml` when you have a compiled model.
+
 ## systemd (optional)
 
 Templates are in `systemd/`. Edit the `User=` and paths, then:
@@ -173,12 +211,15 @@ sudo systemctl enable --now armband-dashboard
 - Scatter plot + fit line + R² / MAE / RMSE
 - Save baseline model
 
-## Next steps (Hailo-8 now identified)
+## Next steps
 
-1. Run `hailortcli fw-control identify` (and `--extended` if available) to confirm live architecture and serial.
-2. Install / verify Hailo runtime + TAPPAS / hailo-apps on the Pi 5.
-3. Decide what runs on the accelerator vs CPU (richer temporal models, PPG quality scoring, motion artifact rejection, multi-feature glucose estimators, etc.).
-4. Start with a simple HEF pipeline that consumes the MQTT stream / SQLite features.
+1. On the Pi: install Hailo runtime if needed (`sudo apt install hailo-all` or packages from hailo.ai), then run `python scripts/hailo_identify.py --extended`.
+2. Collect more Libre + still-window pairs; keep exporting features.
+3. Decide first HEF target (examples):
+   - PPG quality / motion-artifact score
+   - Temporal filt940 → glucose residual on top of the linear baseline
+   - Multi-feature still-window classifier
+4. Compile with Hailo Dataflow Compiler → drop `.hef` path into config → wire `HailoRunner.infer()`.
 
 ## Related Repository
 
