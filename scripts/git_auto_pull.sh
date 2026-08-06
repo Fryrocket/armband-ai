@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Safe auto-pull for armband-ai on the Pi.
 # Exit: 0 ok/skip · 1 local · 2 network · 3 rebase conflict
-# Log rotation default: gzip on (GIT_PULL_LOG_COMPRESS=0 to disable)
-# Env: GIT_PULL_LOG_MAX_BYTES (1MiB) GIT_PULL_LOG_KEEP (5) GIT_PULL_LOG_COMPRESS (1)
+# Log archives: GIT_PULL_LOG_COMPRESSION=gzip|zstd|none (default gzip)
+# Env: GIT_PULL_LOG_MAX_BYTES GIT_PULL_LOG_KEEP GIT_PULL_LOG_COMPRESSION
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -15,15 +15,36 @@ mkdir -p "$ROOT/logs" || {
 LOG="$ROOT/logs/git_auto_pull.log"
 LOG_MAX_BYTES="${GIT_PULL_LOG_MAX_BYTES:-1048576}"
 LOG_KEEP="${GIT_PULL_LOG_KEEP:-5}"
-LOG_COMPRESS="${GIT_PULL_LOG_COMPRESS:-1}"
+
+if [[ -n "${GIT_PULL_LOG_COMPRESSION:-}" ]]; then
+  LOG_COMPRESSION="${GIT_PULL_LOG_COMPRESSION}"
+elif [[ "${GIT_PULL_LOG_COMPRESS:-1}" == "0" ]]; then
+  LOG_COMPRESSION="none"
+else
+  LOG_COMPRESSION="gzip"
+fi
+LOG_COMPRESSION="$(echo "$LOG_COMPRESSION" | tr '[:upper:]' '[:lower:]')"
+case "$LOG_COMPRESSION" in
+  zstd|zst) LOG_COMPRESSION="zstd" ;;
+  none|off|false|0) LOG_COMPRESSION="none" ;;
+  *) LOG_COMPRESSION="gzip" ;;
+esac
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
 compress_file() {
   local src="$1"
-  [[ -f "$src" && "$LOG_COMPRESS" == "1" ]] || return 0
-  command -v gzip >/dev/null 2>&1 || return 0
-  gzip -f -n "$src" 2>/dev/null || true
+  [[ -f "$src" ]] || return 0
+  case "$LOG_COMPRESSION" in
+    gzip)
+      command -v gzip >/dev/null 2>&1 || return 0
+      gzip -f -n "$src" 2>/dev/null || true
+      ;;
+    zstd)
+      command -v zstd >/dev/null 2>&1 || return 0
+      zstd -f -q --rm "$src" 2>/dev/null || true
+      ;;
+  esac
 }
 
 rotate_log_if_needed() {
@@ -36,7 +57,7 @@ rotate_log_if_needed() {
 
   local i
   for (( i=keep; i>=1; i-- )); do
-    for ext in ".gz" ""; do
+    for ext in ".zst" ".gz" ""; do
       local p="${f}.${i}${ext}"
       if [[ -f "$p" ]]; then
         if (( i == keep )); then

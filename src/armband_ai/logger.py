@@ -6,11 +6,13 @@ import gzip
 import json
 import logging
 import os
+import shutil
 import signal
+import subprocess
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import paho.mqtt.client as mqtt
 
@@ -23,13 +25,35 @@ DEFAULT_LOG_MAX_BYTES = 2 * 1024 * 1024  # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 5
 
 
-def _gzip_namer(name: str) -> str:
-    """RotatingFileHandler namer: foo.log.1 → foo.log.1.gz"""
-    return name + ".gz"
+def _normalize_compression(value: Any, compress_flag: Any = True) -> str:
+    """Return 'gzip' | 'zstd' | 'none'. Default gzip when compression is enabled."""
+    if isinstance(compress_flag, str):
+        flag = compress_flag.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        flag = bool(compress_flag)
+
+    if value is None:
+        return "gzip" if flag else "none"
+
+    s = str(value).strip().lower()
+    if s in ("", "none", "off", "false", "0", "no"):
+        return "none"
+    if s in ("zstd", "zst"):
+        return "zstd"
+    if s in ("gzip", "gz", "true", "1", "yes", "on"):
+        return "gzip"
+    # Unknown → gzip if compress enabled else none
+    return "gzip" if flag else "none"
+
+
+def _make_namer(suffix: str) -> Callable[[str], str]:
+    def namer(name: str) -> str:
+        return name + suffix
+
+    return namer
 
 
 def _gzip_rotator(source: str, dest: str) -> None:
-    """Compress rotated file to dest (.gz)."""
     try:
         with open(source, "rb") as f_in, gzip.open(dest, "wb") as f_out:
             while True:
@@ -39,13 +63,34 @@ def _gzip_rotator(source: str, dest: str) -> None:
                 f_out.write(chunk)
         os.remove(source)
     except OSError:
-        # Fall back to plain rename if gzip fails
         try:
-            if not dest.endswith(".gz"):
-                os.replace(source, dest)
-            else:
-                plain = dest[:-3]
-                os.replace(source, plain)
+            os.replace(source, dest[:-3] if dest.endswith(".gz") else dest)
+        except OSError:
+            pass
+
+
+def _zstd_rotator(source: str, dest: str) -> None:
+    """Prefer `zstd` CLI; fall back to plain file if unavailable."""
+    zstd = shutil.which("zstd")
+    if not zstd:
+        try:
+            plain = dest[: -len(".zst")] if dest.endswith(".zst") else dest
+            os.replace(source, plain)
+        except OSError:
+            pass
+        return
+    try:
+        # zstd -f -q -o dest source  (and remove source on success)
+        subprocess.run(
+            [zstd, "-f", "-q", "-o", dest, source],
+            check=True,
+            capture_output=True,
+        )
+        os.remove(source)
+    except (OSError, subprocess.CalledProcessError):
+        try:
+            plain = dest[: -len(".zst")] if dest.endswith(".zst") else dest
+            os.replace(source, plain)
         except OSError:
             pass
 
@@ -56,7 +101,7 @@ def setup_logging(
     *,
     max_bytes: int = DEFAULT_LOG_MAX_BYTES,
     backup_count: int = DEFAULT_LOG_BACKUP_COUNT,
-    compress: bool = True,
+    compression: str = "gzip",
 ) -> None:
     root = logging.getLogger()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
@@ -91,9 +136,13 @@ def setup_logging(
             backupCount=max(1, int(backup_count)),
             encoding="utf-8",
         )
-        if compress:
-            fh.namer = _gzip_namer
+        method = _normalize_compression(compression, True)
+        if method == "gzip":
+            fh.namer = _make_namer(".gz")
             fh.rotator = _gzip_rotator
+        elif method == "zstd":
+            fh.namer = _make_namer(".zst")
+            fh.rotator = _zstd_rotator
         fh.setFormatter(fmt)
         root.addHandler(fh)
 
@@ -151,20 +200,14 @@ class ArmbandLogger:
         try:
             row_id = insert_reading(self.db_path, data)
             self._msg_count += 1
-
-            bpm = data.get("bpm")
-            filt940 = data.get("filt940")
-            moving = data.get("moving")
-            boot = data.get("boot")
-
             log.info(
                 "#%d id=%d  bpm=%s  filt940=%s  moving=%s  boot=%s",
                 self._msg_count,
                 row_id,
-                bpm,
-                filt940,
-                moving,
-                boot,
+                data.get("bpm"),
+                data.get("filt940"),
+                data.get("moving"),
+                data.get("boot"),
             )
         except Exception:
             log.exception("Failed to store reading")
@@ -208,15 +251,16 @@ class ArmbandLogger:
 def main() -> None:
     cfg = load_config()
     log_cfg = cfg.get("logging") or {}
-    compress = log_cfg.get("compress", True)
-    if isinstance(compress, str):
-        compress = compress.strip().lower() in ("1", "true", "yes", "on")
+    method = _normalize_compression(
+        log_cfg.get("compression", log_cfg.get("compress", True)),
+        log_cfg.get("compress", True),
+    )
     setup_logging(
         level=log_cfg.get("level", "INFO"),
         log_file=log_cfg.get("file"),
         max_bytes=int(log_cfg.get("max_bytes", DEFAULT_LOG_MAX_BYTES)),
         backup_count=int(log_cfg.get("backup_count", DEFAULT_LOG_BACKUP_COUNT)),
-        compress=bool(compress),
+        compression=method,
     )
     logger = ArmbandLogger(cfg)
     logger.start()

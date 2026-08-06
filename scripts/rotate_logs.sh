@@ -1,20 +1,50 @@
 #!/usr/bin/env bash
 # Rotate logs/*.log when over size.
-# Default: gzip archives (.1.gz …). LOG_COMPRESS=0 for plain .1 .2 …
-# Env: LOG_DIR LOG_MAX_BYTES LOG_KEEP LOG_COMPRESS
+# Default compression: gzip. Set LOG_COMPRESSION=zstd|gzip|none
+# Env: LOG_DIR LOG_MAX_BYTES LOG_KEEP LOG_COMPRESSION
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="${LOG_DIR:-$ROOT/logs}"
 MAX_BYTES="${LOG_MAX_BYTES:-2097152}"
 KEEP="${LOG_KEEP:-5}"
-COMPRESS="${LOG_COMPRESS:-1}"
+# Prefer LOG_COMPRESSION; legacy LOG_COMPRESS=0 → none
+if [[ -n "${LOG_COMPRESSION:-}" ]]; then
+  COMPRESSION="${LOG_COMPRESSION}"
+elif [[ "${LOG_COMPRESS:-1}" == "0" ]]; then
+  COMPRESSION="none"
+else
+  COMPRESSION="gzip"
+fi
+COMPRESSION="$(echo "$COMPRESSION" | tr '[:upper:]' '[:lower:]')"
+case "$COMPRESSION" in
+  zstd|zst) COMPRESSION="zstd" ;;
+  none|off|false|0) COMPRESSION="none" ;;
+  *) COMPRESSION="gzip" ;;
+esac
+
+suffix_for() {
+  case "$1" in
+    zstd) echo ".zst" ;;
+    gzip) echo ".gz" ;;
+    *) echo "" ;;
+  esac
+}
 
 compress_file() {
   local src="$1"
-  [[ -f "$src" && "$COMPRESS" == "1" ]] || return 0
-  command -v gzip >/dev/null 2>&1 || return 0
-  gzip -f -n "$src" 2>/dev/null || true
+  [[ -f "$src" ]] || return 0
+  case "$COMPRESSION" in
+    gzip)
+      command -v gzip >/dev/null 2>&1 || return 0
+      gzip -f -n "$src" 2>/dev/null || true
+      ;;
+    zstd)
+      if command -v zstd >/dev/null 2>&1; then
+        zstd -f -q --rm "$src" 2>/dev/null || true
+      fi
+      ;;
+  esac
 }
 
 rotate_one() {
@@ -28,9 +58,9 @@ rotate_one() {
     return 0
   fi
 
-  local i
+  local i ext
   for (( i=KEEP; i>=1; i-- )); do
-    for ext in ".gz" ""; do
+    for ext in ".zst" ".gz" ""; do
       local p="${f}.${i}${ext}"
       if [[ -f "$p" ]]; then
         if (( i == KEEP )); then
@@ -49,11 +79,11 @@ rotate_one() {
 }
 
 mkdir -p "$LOG_DIR"
-echo "LOG_DIR=$LOG_DIR MAX_BYTES=$MAX_BYTES KEEP=$KEEP"
+echo "LOG_DIR=$LOG_DIR MAX_BYTES=$MAX_BYTES KEEP=$KEEP COMPRESSION=$COMPRESSION"
 
 shopt -s nullglob
 for f in "$LOG_DIR"/*.log; do
-  [[ "$f" =~ \.log\.[0-9]+(\.gz)?$ ]] && continue
+  [[ "$f" =~ \.log\.[0-9]+(\.(gz|zst))?$ ]] && continue
   rotate_one "$f"
 done
 echo "done"
