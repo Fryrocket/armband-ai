@@ -1,0 +1,19 @@
+[Unit]
+Description=Armband MQTT Logger
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/armband-ai
+Environment=PATH=/home/pi/armband-ai/.venv/bin:/usr/bin
+ExecStart=/home/pi/armband-ai/.venv/bin/python /home/pi/armband-ai/scripts/run_logger.py
+Restart=always
+RestartSec=5
+
+# Optional: ensure Mosquitto is up first if you use it on the same Pi
+# After=mosquitto.service
+
+[Install]
+WantedBy=multi-user.target

@@ -16,3 +16,7 @@ database:
 logging:
   level: "INFO"                # DEBUG | INFO | WARNING | ERROR
   file: "logs/mqtt_logger.log" # set to null to disable file logging
+
+calibration:
+  window_seconds: 180          # ± seconds around each Libre reading
+  prefer_still: true           # prefer non-moving armband samples when available

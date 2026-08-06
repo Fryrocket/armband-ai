@@ -7,7 +7,7 @@ from typing import Optional
 
 import pandas as pd
 
-from .db import get_connection
+from .db import get_connection, init_db
 
 
 def load_recent(
@@ -15,7 +15,7 @@ def load_recent(
     limit: int = 500,
     minutes: Optional[int] = None,
 ) -> pd.DataFrame:
-    """Return recent readings as a DataFrame ordered by time ascending."""
+    """Return recent PPG readings as a DataFrame ordered by time ascending."""
     with get_connection(db_path) as conn:
         if minutes is not None:
             sql = """
@@ -42,7 +42,7 @@ def load_recent(
 
 
 def load_latest(db_path: str | Path) -> Optional[dict]:
-    """Return the single most recent reading as a dict, or None."""
+    """Return the single most recent PPG reading as a dict, or None."""
     with get_connection(db_path) as conn:
         row = conn.execute(
             "SELECT * FROM ppg_readings ORDER BY id DESC LIMIT 1"
@@ -55,3 +55,24 @@ def load_latest(db_path: str | Path) -> Optional[dict]:
 def count_readings(db_path: str | Path) -> int:
     with get_connection(db_path) as conn:
         return conn.execute("SELECT COUNT(*) FROM ppg_readings").fetchone()[0]
+
+
+def load_libre(db_path: str | Path) -> pd.DataFrame:
+    """Return all Libre / reference glucose readings, oldest first."""
+    init_db(db_path)  # ensure table exists
+    with get_connection(db_path) as conn:
+        df = pd.read_sql_query(
+            "SELECT * FROM libre_readings ORDER BY recorded_at ASC",
+            conn,
+        )
+    if not df.empty and "recorded_at" in df.columns:
+        df["recorded_at"] = pd.to_datetime(df["recorded_at"], utc=True)
+        if "created_at" in df.columns:
+            df["created_at"] = pd.to_datetime(df["created_at"], utc=True)
+    return df
+
+
+def count_libre(db_path: str | Path) -> int:
+    init_db(db_path)
+    with get_connection(db_path) as conn:
+        return conn.execute("SELECT COUNT(*) FROM libre_readings").fetchone()[0]

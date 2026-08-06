@@ -1,0 +1,16 @@
+[Unit]
+Description=Armband Live Dashboard (Streamlit)
+After=network.target armband-logger.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/armband-ai
+Environment=PATH=/home/pi/armband-ai/.venv/bin:/usr/bin
+ExecStart=/home/pi/armband-ai/.venv/bin/streamlit run /home/pi/armband-ai/dashboard/app.py --server.address 0.0.0.0 --server.port 8501 --browser.gatherUsageStats false
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

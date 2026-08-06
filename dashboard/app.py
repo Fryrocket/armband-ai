@@ -7,8 +7,10 @@ Run:  streamlit run dashboard/app.py --server.address 0.0.0.0 --server.port 8501
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -18,8 +20,16 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from armband_ai.calibration import build_calibration_pairs, fit_baseline, BaselineModel
 from armband_ai.config import load_config, ROOT as PROJECT_ROOT
-from armband_ai.queries import load_recent, load_latest, count_readings
+from armband_ai.db import init_db, insert_libre, delete_libre
+from armband_ai.queries import (
+    count_libre,
+    count_readings,
+    load_latest,
+    load_libre,
+    load_recent,
+)
 
 # ---------------------------------------------------------------------------
 # Page config (must be first Streamlit call)
@@ -31,16 +41,17 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Mobile-friendly CSS tweaks
-st.markdown("""
+st.markdown(
+    """
 <style>
     .block-container { padding-top: 1rem; padding-bottom: 1rem; }
     div[data-testid="stMetricValue"] { font-size: 1.6rem; }
     div[data-testid="stMetricLabel"] { font-size: 0.85rem; }
-    /* tighter gaps on phone */
     [data-testid="stHorizontalBlock"] { gap: 0.5rem; }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 
 def get_db_path() -> str:
@@ -52,41 +63,38 @@ def get_db_path() -> str:
     return str(p)
 
 
-def metric_color(value, good_low=None, good_high=None):
-    """Simple helper – returns None (default) for now; can expand later."""
-    return None
+def get_cal_defaults() -> tuple[int, bool]:
+    cfg = load_config()
+    cal = cfg.get("calibration", {})
+    return int(cal.get("window_seconds", 180)), bool(cal.get("prefer_still", True))
 
 
-def main():
-    db_path = get_db_path()
-
-    st.title("Armband Live")
-
-    # ---- Sidebar controls ----
+# ===========================================================================
+# LIVE TAB
+# ===========================================================================
+def render_live(db_path: str) -> None:
     with st.sidebar:
-        st.header("Controls")
+        st.header("Live controls")
         window_min = st.select_slider(
             "Time window (minutes)",
             options=[5, 15, 30, 60, 120, 360, 720, 1440],
             value=60,
+            key="live_window",
         )
-        auto_refresh = st.checkbox("Auto-refresh (10 s)", value=True)
+        auto_refresh = st.checkbox("Auto-refresh (10 s)", value=True, key="live_refresh")
         st.caption(f"DB: `{db_path}`")
-        total = count_readings(db_path)
-        st.caption(f"Total readings stored: **{total}**")
+        st.caption(f"PPG readings: **{count_readings(db_path)}**")
 
-    # ---- Latest snapshot ----
     latest = load_latest(db_path)
 
     if latest is None:
         st.warning("No data yet. Start the MQTT logger and wait for the armband to publish.")
         if auto_refresh:
-            st.rerun()  # will keep checking
+            time.sleep(10)
+            st.rerun()
         return
 
-    # Top metrics row
     c1, c2, c3, c4, c5 = st.columns(5)
-
     bpm = latest.get("bpm")
     spo2 = latest.get("spo2")
     temp = latest.get("temp")
@@ -104,24 +112,35 @@ def main():
     status = "🟢 Moving" if moving else "⚪ Still"
     st.caption(f"Last update: `{received}` · {status} · boot #{latest.get('boot', '?')}")
 
-    # ---- Load history ----
-    df = load_recent(db_path, minutes=window_min)
+    # Live estimate if a baseline model exists
+    model_path = PROJECT_ROOT / "models" / "baseline.json"
+    if model_path.exists() and filt940 is not None:
+        try:
+            model = BaselineModel.load(model_path)
+            est = model.predict(float(filt940))
+            st.info(f"Baseline estimate: **{est:.0f} mg/dL**  (R²={model.r2:.2f}, n={model.n_pairs})")
+        except Exception:
+            pass
 
+    df = load_recent(db_path, minutes=window_min)
     if df.empty:
         st.info(f"No readings in the last {window_min} minutes.")
         return
 
-    # ---- Charts ----
     fig = make_subplots(
         rows=4,
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.04,
-        subplot_titles=("filt940 (940 nm reflectance)", "Heart Rate (BPM)", "SpO₂ %", "Battery (V)"),
+        subplot_titles=(
+            "filt940 (940 nm reflectance)",
+            "Heart Rate (BPM)",
+            "SpO₂ %",
+            "Battery (V)",
+        ),
         row_heights=[0.35, 0.25, 0.20, 0.20],
     )
 
-    # 940 nm – primary experimental channel
     fig.add_trace(
         go.Scatter(
             x=df["received_at"],
@@ -130,7 +149,8 @@ def main():
             name="filt940",
             line=dict(width=2, color="#e74c3c"),
         ),
-        row=1, col=1,
+        row=1,
+        col=1,
     )
     if "raw940" in df.columns:
         fig.add_trace(
@@ -142,10 +162,10 @@ def main():
                 line=dict(width=1, color="#e74c3c", dash="dot"),
                 opacity=0.4,
             ),
-            row=1, col=1,
+            row=1,
+            col=1,
         )
 
-    # BPM
     fig.add_trace(
         go.Scatter(
             x=df["received_at"],
@@ -155,10 +175,10 @@ def main():
             line=dict(width=2, color="#3498db"),
             marker=dict(size=4),
         ),
-        row=2, col=1,
+        row=2,
+        col=1,
     )
 
-    # SpO2 (hide invalid -1)
     spo2_plot = df["spo2"].where(df["spo2"] >= 0)
     fig.add_trace(
         go.Scatter(
@@ -169,10 +189,10 @@ def main():
             line=dict(width=2, color="#2ecc71"),
             marker=dict(size=4),
         ),
-        row=3, col=1,
+        row=3,
+        col=1,
     )
 
-    # Battery
     fig.add_trace(
         go.Scatter(
             x=df["received_at"],
@@ -181,7 +201,8 @@ def main():
             name="Battery",
             line=dict(width=2, color="#f39c12"),
         ),
-        row=4, col=1,
+        row=4,
+        col=1,
     )
 
     fig.update_layout(
@@ -194,10 +215,8 @@ def main():
     )
     fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor="rgba(128,128,128,0.2)")
     fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor="rgba(128,128,128,0.2)")
-
     st.plotly_chart(fig, use_container_width=True)
 
-    # ---- Motion & extras ----
     with st.expander("Motion & details"):
         m1, m2 = st.columns(2)
         with m1:
@@ -212,7 +231,6 @@ def main():
                     name="motion",
                 )
             )
-            # highlight moving periods
             if "moving" in df.columns:
                 moving_mask = df["moving"] == 1
                 if moving_mask.any():
@@ -248,13 +266,24 @@ def main():
                 else:
                     st.caption("No motion transitions in this window.")
 
-    # ---- Raw table ----
     with st.expander("Raw data (last 50)"):
         show_cols = [
-            c for c in [
-                "received_at", "bpm", "spo2", "temp", "filt940", "raw940",
-                "batt", "motion", "moving", "trans", "boot", "conn_ms"
-            ] if c in df.columns
+            c
+            for c in [
+                "received_at",
+                "bpm",
+                "spo2",
+                "temp",
+                "filt940",
+                "raw940",
+                "batt",
+                "motion",
+                "moving",
+                "trans",
+                "boot",
+                "conn_ms",
+            ]
+            if c in df.columns
         ]
         st.dataframe(
             df[show_cols].tail(50).iloc[::-1],
@@ -262,11 +291,163 @@ def main():
             hide_index=True,
         )
 
-    # ---- Auto refresh ----
     if auto_refresh:
-        import time
         time.sleep(10)
         st.rerun()
+
+
+# ===========================================================================
+# CALIBRATION TAB
+# ===========================================================================
+def render_calibration(db_path: str) -> None:
+    init_db(db_path)
+    default_window, default_prefer = get_cal_defaults()
+
+    st.subheader("Log a Libre / reference reading")
+    with st.form("log_glucose_form", clear_on_submit=True):
+        col_a, col_b, col_c = st.columns([2, 2, 3])
+        with col_a:
+            glucose = st.number_input("Glucose (mg/dL)", min_value=20.0, max_value=600.0, value=120.0, step=1.0)
+        with col_b:
+            source = st.selectbox("Source", ["libre", "fingerstick", "other"])
+        with col_c:
+            notes = st.text_input("Notes (optional)", "")
+        submitted = st.form_submit_button("Save reading")
+        if submitted:
+            row_id = insert_libre(db_path, glucose_mgdl=glucose, source=source, notes=notes or None)
+            st.success(f"Saved id={row_id}: {glucose} mg/dL ({source})")
+            st.rerun()
+
+    st.divider()
+
+    # Settings
+    c1, c2 = st.columns(2)
+    with c1:
+        window = st.slider("Pairing window ± seconds", 30, 600, default_window, step=30)
+    with c2:
+        prefer_still = st.checkbox("Prefer still samples", value=default_prefer)
+
+    libre_df = load_libre(db_path)
+    st.caption(f"Libre readings stored: **{len(libre_df)}** · PPG readings: **{count_readings(db_path)}**")
+
+    if not libre_df.empty:
+        with st.expander("All Libre readings"):
+            show = libre_df[["id", "recorded_at", "glucose_mgdl", "source", "notes"]].copy()
+            st.dataframe(show.iloc[::-1], use_container_width=True, hide_index=True)
+            del_id = st.number_input("Delete reading by id", min_value=0, value=0, step=1)
+            if st.button("Delete") and del_id > 0:
+                if delete_libre(db_path, int(del_id)):
+                    st.success(f"Deleted id={del_id}")
+                    st.rerun()
+                else:
+                    st.error("id not found")
+
+    pairs = build_calibration_pairs(
+        db_path,
+        window_seconds=window,
+        prefer_still=prefer_still,
+    )
+
+    st.subheader(f"Calibration pairs ({len(pairs)})")
+
+    if pairs.empty:
+        st.info(
+            "No pairs yet. Log Libre readings while the armband is streaming, "
+            "or widen the time window. Need data on both sides around the same time."
+        )
+        return
+
+    st.dataframe(
+        pairs[
+            [
+                "recorded_at",
+                "glucose_mgdl",
+                "filt940_mean",
+                "n_samples",
+                "still_fraction",
+                "time_offset_s",
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    model = fit_baseline(pairs, window_seconds=window, prefer_still=prefer_still)
+
+    if model is None:
+        st.warning("Need at least 2 pairs to fit a baseline model.")
+        return
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("R²", f"{model.r2:.3f}")
+    m2.metric("MAE", f"{model.mae:.1f} mg/dL")
+    m3.metric("RMSE", f"{model.rmse:.1f} mg/dL")
+    m4.metric("Pairs", f"{model.n_pairs}")
+
+    st.caption(f"glucose ≈ {model.slope:.6f} × filt940 + {model.intercept:.2f}")
+
+    # Scatter + fit line
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=pairs["filt940_mean"],
+            y=pairs["glucose_mgdl"],
+            mode="markers",
+            name="pairs",
+            marker=dict(size=10, color="#e74c3c"),
+            text=pairs["recorded_at"].astype(str),
+            hovertemplate="filt940=%{x:.1f}<br>glucose=%{y:.0f}<br>%{text}<extra></extra>",
+        )
+    )
+
+    x_line = np.linspace(pairs["filt940_mean"].min(), pairs["filt940_mean"].max(), 50)
+    y_line = model.predict(x_line)
+    fig.add_trace(
+        go.Scatter(
+            x=x_line,
+            y=y_line,
+            mode="lines",
+            name="baseline fit",
+            line=dict(color="#3498db", width=2),
+        )
+    )
+
+    fig.update_layout(
+        height=420,
+        margin=dict(l=40, r=20, t=30, b=40),
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis_title="filt940 (mean in window)",
+        yaxis_title="Glucose (mg/dL)",
+        showlegend=True,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    if st.button("Save baseline model"):
+        out = PROJECT_ROOT / "models" / "baseline.json"
+        model.save(out)
+        st.success(f"Saved → {out}")
+
+    st.caption(
+        "⚠️ Experimental only. Not a medical device. Do not use for treatment decisions."
+    )
+
+
+# ===========================================================================
+# MAIN
+# ===========================================================================
+def main() -> None:
+    db_path = get_db_path()
+    st.title("Armband")
+
+    tab_live, tab_cal = st.tabs(["Live", "Calibration"])
+
+    with tab_live:
+        render_live(db_path)
+
+    with tab_cal:
+        render_calibration(db_path)
 
 
 if __name__ == "__main__":

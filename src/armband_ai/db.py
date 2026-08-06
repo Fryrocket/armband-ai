@@ -1,4 +1,4 @@
-"""SQLite persistence for armband PPG + 940 nm readings."""
+"""SQLite persistence for armband PPG + 940 nm readings and calibration data."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 SCHEMA = """
@@ -30,6 +30,17 @@ CREATE TABLE IF NOT EXISTS ppg_readings (
 CREATE INDEX IF NOT EXISTS idx_ppg_received_at ON ppg_readings(received_at);
 CREATE INDEX IF NOT EXISTS idx_ppg_boot       ON ppg_readings(boot);
 CREATE INDEX IF NOT EXISTS idx_ppg_moving     ON ppg_readings(moving);
+
+CREATE TABLE IF NOT EXISTS libre_readings (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    recorded_at     TEXT    NOT NULL,          -- UTC ISO of the glucose reading
+    glucose_mgdl    REAL    NOT NULL,          -- FreeStyle Libre / fingerstick value
+    source          TEXT    DEFAULT 'libre',   -- libre | fingerstick | other
+    notes           TEXT,
+    created_at      TEXT    NOT NULL           -- when this row was inserted
+);
+
+CREATE INDEX IF NOT EXISTS idx_libre_recorded_at ON libre_readings(recorded_at);
 """
 
 
@@ -50,7 +61,7 @@ def init_db(db_path: str | Path) -> None:
 
 
 def insert_reading(db_path: str | Path, data: dict[str, Any]) -> int:
-    """Insert one reading. Returns the new row id."""
+    """Insert one PPG reading. Returns the new row id."""
     received_at = datetime.now(timezone.utc).isoformat()
 
     moving = data.get("moving")
@@ -87,3 +98,39 @@ def insert_reading(db_path: str | Path, data: dict[str, Any]) -> int:
         )
         conn.commit()
         return cur.lastrowid or 0
+
+
+def insert_libre(
+    db_path: str | Path,
+    glucose_mgdl: float,
+    recorded_at: Optional[str] = None,
+    source: str = "libre",
+    notes: Optional[str] = None,
+) -> int:
+    """Insert a FreeStyle Libre / reference glucose reading.
+
+    recorded_at should be UTC ISO. If omitted, uses now.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    if recorded_at is None:
+        recorded_at = now
+
+    with get_connection(db_path) as conn:
+        # Ensure schema exists (safe to call repeatedly)
+        conn.executescript(SCHEMA)
+        cur = conn.execute(
+            """
+            INSERT INTO libre_readings (recorded_at, glucose_mgdl, source, notes, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (recorded_at, float(glucose_mgdl), source, notes, now),
+        )
+        conn.commit()
+        return cur.lastrowid or 0
+
+
+def delete_libre(db_path: str | Path, libre_id: int) -> bool:
+    with get_connection(db_path) as conn:
+        cur = conn.execute("DELETE FROM libre_readings WHERE id = ?", (libre_id,))
+        conn.commit()
+        return cur.rowcount > 0
