@@ -1,6 +1,7 @@
 # Armband AI – Pi 5 + Hailo Calibration & Live Dashboard
 
-Companion to [armband-ppg-940nm](https://github.com/Fryrocket/armband-ppg-940nm).
+> **Part of [BGM](https://github.com/Fryrocket/BGM)** – the umbrella wearable blood-glucose monitoring project.  
+> Wearable firmware companion: **[armband-ppg-940nm](https://github.com/Fryrocket/armband-ppg-940nm)**.
 
 **v0.4.2** – Hailo inference path (HEF → CPU fallback), MLP→ONNX trainer, quality-gate + drift docs, multi-feature OLS, HEF-ready `HailoRunner`.
 
