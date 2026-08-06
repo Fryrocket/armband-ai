@@ -2,12 +2,13 @@
 
 Companion to [armband-ppg-940nm](https://github.com/Fryrocket/armband-ppg-940nm).
 
-**v0.4.1** – multi-feature OLS, HEF-ready `HailoRunner`, quality-gated calibration, inference service, pipeline docs, DB hardening.
+**v0.4.2** – Hailo inference path (HEF → CPU fallback), MLP→ONNX trainer, quality-gate + drift docs, multi-feature OLS, HEF-ready `HailoRunner`.
 
 | Doc | Purpose |
 |-----|---------|
 | **[HARDWARE.md](HARDWARE.md)** | BOM: Pi, AI HAT, armband, boot SSD |
 | **[docs/HAILO_DRIVER.md](docs/HAILO_DRIVER.md)** | Driver / firmware / HailoRT install & diagnose |
+| **[docs/HAILO_MODEL.md](docs/HAILO_MODEL.md)** | Train MLP → ONNX → DFC HEF → deploy on Pi |
 | **[docs/PIPELINE.md](docs/PIPELINE.md)** | MQTT → DB → features → quality → models → Hailo |
 | **[docs/LIBRE_FLOW.md](docs/LIBRE_FLOW.md)** | How to log Libre/fingerstick references |
 | **[docs/GIT_AUTO_PULL.md](docs/GIT_AUTO_PULL.md)** | Auto-pull exit codes & error-handling examples |
@@ -34,6 +35,19 @@ python scripts/hailo_identify.py --extended --save models/hailo_device.json
 - PCIe Gen3 via `raspi-config` if needed
 
 Silicon (photos): industrial **Hailo-8 / HNC18BI11BH (26 TOPS)** — confirm with `Device Architecture`.
+
+### Hailo model path (optional)
+
+CPU baseline / multi-feature work without an HEF. To run a neural net on the NPU:
+
+1. Collect quality-gated Libre pairs
+2. `python scripts/train_mlp_onnx.py --from-db --min-quality 60` → ONNX + norm JSON
+3. Compile ONNX → HEF on **x86_64** with Hailo DFC (`hw_arch=hailo8`)
+4. Set `hailo.hef_path` (and optional `norm_path`) in `config.yaml`
+
+Full checklist: **[docs/HAILO_MODEL.md](docs/HAILO_MODEL.md)**.
+
+Inference priority: **Hailo HEF → CPU multifeature → CPU baseline → quality-only**.
 
 ## What runs on the Pi
 
@@ -81,6 +95,8 @@ See **[docs/LIBRE_FLOW.md](docs/LIBRE_FLOW.md)**.
 python scripts/log_glucose.py 142 --notes "still"
 python scripts/calibrate.py --min-quality 60 --min-still 0.7
 python scripts/train_multifeature.py --min-quality 60
+# optional neural path:
+python scripts/train_mlp_onnx.py --from-db --min-quality 60
 ```
 
 ### Quality gates (calibration)
@@ -148,10 +164,10 @@ Practical improvements ranked by leverage. Most are incremental; the core pipeli
    Firmware / DKMS version mismatches, Gen2 vs Gen3 link, venv + system-site-packages notes. Link to Pi / Hailo issues when they appear.
 
 10. **Full `WindowFeatures` at Libre timestamps for multi-feature training**  
-    `build_calibration_pairs` currently aggregates a reduced column set. Computing the full feature vector per pair unlocks a stronger multi-feature model once you have enough high-quality still readings.
+    `build_calibration_pairs` currently aggregates a reduced column set. Computing the full feature vector per pair unlocks a stronger multi-feature model once you have enough high-quality still readings. (`train_mlp_onnx.py --from-db` already rebuilds full features.)
 
-11. **Optional Hailo path in the inference loop**  
-    When `hailo.hef_path` is set and the runner is ready, prefer HEF output and fall back to CPU multi-feature / baseline. Scaffolding already exists in `HailoRunner`.
+11. **Hailo path in the inference loop** — **done in v0.4.2**  
+    When `hailo.hef_path` is set and the runner is ready, prefer HEF output and fall back to CPU multi-feature / baseline. See [docs/HAILO_MODEL.md](docs/HAILO_MODEL.md).
 
 12. **Retention / vacuum**  
     On a 250 GB SSD you have headroom, but a simple retention policy (or periodic export + `VACUUM`) keeps the DB tidy after months of continuous logging.

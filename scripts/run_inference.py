@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Background inference service: quality + baseline → SQLite.
+"""Background inference service: quality + models (Hailo → CPU) → SQLite.
 
 Usage:
   python scripts/run_inference.py              # loop
@@ -17,7 +17,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from armband_ai.config import load_config
-from armband_ai.inference_service import resolve_db_path, resolve_model_path, run_loop, run_once
+from armband_ai.inference_service import (
+    resolve_db_path,
+    resolve_hef_path,
+    resolve_model_path,
+    resolve_multifeature_path,
+    resolve_norm_path,
+    run_loop,
+    run_once,
+)
 from armband_ai.logger import setup_logging
 
 
@@ -42,7 +50,14 @@ def main() -> None:
     if args.once:
         db_path = resolve_db_path(cfg)
         window = float((cfg.get("inference") or {}).get("window_minutes", 5))
-        result = run_once(db_path, window_minutes=window, model_path=resolve_model_path(cfg))
+        result = run_once(
+            db_path,
+            window_minutes=window,
+            model_path=resolve_model_path(cfg),
+            multifeature_path=resolve_multifeature_path(cfg),
+            hef_path=resolve_hef_path(cfg),
+            norm_path=resolve_norm_path(cfg),
+        )
         if result is None:
             print("No data.")
             sys.exit(1)
