@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rotate logs/*.log when over size.
-# Default compression: zstd. LOG_COMPRESSION=zstd|gzip|none
-# Env: LOG_DIR LOG_MAX_BYTES LOG_KEEP LOG_COMPRESSION
+# Default: zstd. If zstd is not installed, leaves uncompressed .1 (no failure).
+# LOG_COMPRESSION=zstd|gzip|none
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,6 +31,7 @@ compress_file() {
       gzip -f -n "$src" 2>/dev/null || true
       ;;
     zstd)
+      # Missing zstd → leave plain ${src}; rotation already succeeded
       command -v zstd >/dev/null 2>&1 || return 0
       zstd -f -q --rm "$src" 2>/dev/null || true
       ;;

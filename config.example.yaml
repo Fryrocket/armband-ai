@@ -21,7 +21,8 @@ logging:
   file: "logs/mqtt_logger.log"
   max_bytes: 2097152
   backup_count: 5
-  # Default zstd (archives: mqtt_logger.log.1.zst). Needs: sudo apt install zstd
+  # Default: zstd → mqtt_logger.log.1.zst (install: sudo apt install zstd).
+  # If the zstd binary is missing, rotation still runs and keeps an uncompressed .1 file.
   # Alternatives: gzip | none
   compression: zstd
 
