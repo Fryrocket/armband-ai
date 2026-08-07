@@ -191,4 +191,8 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now armband-logger armband-inference armband-dashboard
 ```
 
+## License
+
+**GNU GPLv3 or later** — see [LICENSE](LICENSE).
+
 ⚠️ Experimental only. Not a medical device.
