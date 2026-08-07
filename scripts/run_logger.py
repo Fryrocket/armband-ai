@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Fryrocket
 """Convenience entry point: python scripts/run_logger.py
 
 Exit codes: 0 clean stop · 2 startup/config failure · 130 interrupted
