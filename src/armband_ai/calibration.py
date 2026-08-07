@@ -1,4 +1,13 @@
-"""Calibration: pair Libre readings with nearest armband samples + baseline model."""
+"""Calibration: pair Libre readings with nearest armband samples + baseline model.
+
+--- FIX APPLIED ---
+build_calibration_pairs() previously computed `still_fraction` AFTER already
+filtering `candidates` down to moving==0 rows (when prefer_still=True and any
+still sample existed). That made still_fraction trivially 1.0 for almost any
+window, silently defeating the min_still_fraction quality gate. still_fraction
+is now computed on the *original* unfiltered window before the prefer_still
+filter is applied, so the gate actually reflects how still the raw window was.
+"""
 
 from __future__ import annotations
 
@@ -75,6 +84,7 @@ def build_calibration_pairs(
     --------
     For each Libre timestamp T:
       - Find PPG rows with received_at in [T - window, T + window]
+      - Compute still_fraction on that *raw* window and gate on it first
       - Prefer non-moving samples if prefer_still and any exist
       - Aggregate: mean filt940, mean raw940, mean motion, count
       - Score window quality (CPU heuristic)
@@ -110,14 +120,17 @@ def build_calibration_pairs(
         if candidates.empty:
             continue
 
+        # FIX: compute still_fraction on the raw, unfiltered window *before*
+        # applying the prefer_still filter below — otherwise this gate is
+        # trivially satisfied whenever even one still sample exists.
+        still_fraction = float((candidates["moving"] == 0).mean())
+        if still_fraction < min_still_fraction:
+            continue
+
         if prefer_still and (candidates["moving"] == 0).any():
             candidates = candidates[candidates["moving"] == 0]
 
         if len(candidates) < min_samples:
-            continue
-
-        still_fraction = float((candidates["moving"] == 0).mean())
-        if still_fraction < min_still_fraction:
             continue
 
         q = score_dataframe(candidates)
