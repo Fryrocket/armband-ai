@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Fryrocket
+
 """Load configuration from config.yaml + environment variables."""
 
 from __future__ import annotations
