@@ -60,10 +60,13 @@ def load_config(path: str | Path | None = None) -> dict:
     cal.setdefault("prefer_still", True)
     cal.setdefault("min_quality", 50)
     cal.setdefault("min_still_fraction", 0.6)
+    cal.setdefault("min_clean_streak", 0)
     if os.getenv("CAL_MIN_QUALITY") is not None:
         cal["min_quality"] = float(os.getenv("CAL_MIN_QUALITY"))
     if os.getenv("CAL_MIN_STILL") is not None:
         cal["min_still_fraction"] = float(os.getenv("CAL_MIN_STILL"))
+    if os.getenv("CAL_MIN_CLEAN_STREAK") is not None:
+        cal["min_clean_streak"] = int(os.getenv("CAL_MIN_CLEAN_STREAK"))
 
     # --- Inference service ---
     inf = config.setdefault("inference", {})
