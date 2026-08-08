@@ -1,6 +1,6 @@
 """Calibration: pair Libre readings with nearest armband samples + baseline model.
 
---- FIX APPLIED ---
+--- FIX APPLIED (still_fraction) ---
 build_calibration_pairs() previously computed `still_fraction` AFTER already
 filtering `candidates` down to moving==0 rows (when prefer_still=True and any
 still sample existed). That made still_fraction trivially 1.0 for almost any
@@ -12,7 +12,21 @@ filter is applied, so the gate actually reflects how still the raw window was.
 Additionally gate on max_clean_streak (still + optically stable run length)
 computed on the raw window via WindowFeatures. Prefer-still alone can still
 cherry-pick short clean snippets; requiring a sustained clean streak rejects
-those. Default min_clean_streak=0 keeps old behaviour; recommend 10–15.
+those. Default min_clean_streak=0 keeps old behaviour; recommend 10-15.
+
+--- FIX APPLIED (quality_score) ---
+score_dataframe() was previously called AFTER the prefer_still filter had
+already dropped every moving sample from `candidates`. quality.score_window
+penalizes almost entirely on motion (still_fraction, motion_mean,
+moving_transitions), so scoring a motion-free subset silently inflated
+quality_score in exactly the same way the still_fraction bug did — the
+min_quality gate was effectively checking "is this window clean once you
+throw away everything that wasn't," not "was this window clean." quality is
+now computed from `raw_feats` (the same unfiltered window used for
+still_fraction/clean_streak) via score_window(), before prefer_still is
+applied. The prefer_still filter still runs afterward, but only to decide
+which rows are averaged into filt940_mean etc. — it no longer affects what
+gets scored or gated.
 """
 
 from __future__ import annotations
@@ -28,7 +42,7 @@ import pandas as pd
 
 from .db import get_connection, init_db
 from .features import extract_window_features
-from .quality import score_dataframe
+from .quality import score_window
 from .queries import load_libre
 
 
@@ -93,13 +107,15 @@ def build_calibration_pairs(
     Strategy
     --------
     For each Libre timestamp T:
-      - Find PPG rows with received_at in [T - window, T + window]
-      - Compute still_fraction and max_clean_streak on that *raw* window
-      - Gate on min_still_fraction and min_clean_streak first
-      - Prefer non-moving samples if prefer_still and any exist
-      - Aggregate: mean filt940, mean raw940, mean motion, count
-      - Score window quality (CPU heuristic)
-      - Keep the pair only if ≥ min_samples and quality/still/clean gates pass
+      - Find PPG rows with received_at in [T - window, T + window]  (raw window)
+      - Compute still_fraction, max_clean_streak, and quality_score on that
+        *raw* window (before any filtering) via a single WindowFeatures pass
+      - Gate on min_still_fraction, min_clean_streak, and min_quality first —
+        all three reflect the window as actually recorded
+      - THEN, for aggregation only, prefer non-moving samples if prefer_still
+        and any exist
+      - Aggregate: mean filt940, mean raw940, mean motion, count (over the
+        aggregation set)
 
     Returns a DataFrame with one row per successful pair.
     """
@@ -131,7 +147,8 @@ def build_calibration_pairs(
         if candidates.empty:
             continue
 
-        # still_fraction + consecutive-clean on the *raw* unfiltered window
+        # still_fraction, consecutive-clean, and quality — all computed on the
+        # *raw* unfiltered window, in one pass, before any prefer_still filter.
         raw_feats = extract_window_features(candidates)
         if raw_feats is None:
             continue
@@ -145,19 +162,22 @@ def build_calibration_pairs(
         if max_clean_streak < min_clean_streak:
             continue
 
-        if prefer_still and (candidates["moving"] == 0).any():
-            candidates = candidates[candidates["moving"] == 0]
-
-        if len(candidates) < min_samples:
-            continue
-
-        q = score_dataframe(candidates)
-        quality_score = float(q.score) if q is not None else 0.0
-        quality_label = q.label if q is not None else "unknown"
+        q = score_window(raw_feats)
+        quality_score = float(q.score)
+        quality_label = q.label
         if quality_score < min_quality:
             continue
 
-        median_t = candidates["received_at"].median()
+        # Aggregation set: prefer still samples, but this no longer affects
+        # what was scored or gated above.
+        agg = candidates
+        if prefer_still and (candidates["moving"] == 0).any():
+            agg = candidates[candidates["moving"] == 0]
+
+        if len(agg) < min_samples:
+            continue
+
+        median_t = agg["received_at"].median()
         offset_s = (median_t - t).total_seconds()
 
         pairs.append(
@@ -167,11 +187,11 @@ def build_calibration_pairs(
                 "glucose_mgdl": float(row["glucose_mgdl"]),
                 "source": row.get("source", "libre"),
                 "notes": row.get("notes"),
-                "n_samples": len(candidates),
-                "filt940_mean": float(candidates["filt940"].mean()),
-                "filt940_std": float(candidates["filt940"].std()) if len(candidates) > 1 else 0.0,
-                "raw940_mean": float(candidates["raw940"].mean()),
-                "motion_mean": float(candidates["motion"].mean()),
+                "n_samples": len(agg),
+                "filt940_mean": float(agg["filt940"].mean()),
+                "filt940_std": float(agg["filt940"].std()) if len(agg) > 1 else 0.0,
+                "raw940_mean": float(agg["raw940"].mean()),
+                "motion_mean": float(agg["motion"].mean()),
                 "still_fraction": still_fraction,
                 "max_clean_streak": max_clean_streak,
                 "clean_fraction": clean_fraction,
