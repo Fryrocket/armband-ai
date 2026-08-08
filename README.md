@@ -3,7 +3,7 @@
 > **Part of [BGM](https://github.com/Fryrocket/BGM)** – the umbrella wearable blood-glucose monitoring project.  
 > Wearable firmware companion: **[armband-ppg-940nm](https://github.com/Fryrocket/armband-ppg-940nm)**.
 
-**v0.4.4** – Quality score now evaluated on the raw window (before prefer-still), consecutive-clean streak gates, tighter optical penalties, Hailo path, MLP→ONNX trainer, multi-feature OLS.
+**v0.4.5** – Drift monitor (still-only filt940 median vs last-cal baseline) + insert-time soft validation for BPM/temp; quality score on raw window, consecutive-clean streak gates, tighter optical penalties, Hailo path, MLP→ONNX trainer, multi-feature OLS.
 
 | Doc | Purpose |
 |-----|---------|
@@ -133,7 +133,7 @@ Within-window quality cannot see slow baseline shift (contact change, temperatur
 | ≳ 80 | Alert — consider re-calibration |
 | sustained large shift | Mark model stale; collect new still Libre pairs |
 
-Surface the current delta on the dashboard AI / Calibration tabs. Re-run `calibrate.py` / `train_multifeature.py` after an alert once you have fresh high-quality pairs.
+Implemented in `src/armband_ai/drift_monitor.py`. Successful `calibrate.py` (and train scripts) snapshot the still-only median to `models/drift_baseline.json`. Use `compute_drift_from_db()` or the DriftMonitor class to surface delta + `is_stale` on the dashboard. Advisory only — does not block inference.
 
 ## Hardening recommendations
 
@@ -147,14 +147,14 @@ Practical improvements ranked by leverage. Most are incremental; the core pipeli
 2. **Quality score on raw window** — **done 2026-08-08**  
    `score_window(raw_feats)` now runs before prefer-still filtering, so `min_quality` reflects the true window, not a motion-scrubbed subset.
 
-3. **Drift monitor (still-only median)**  
-   Background job or inference-loop side task: every 1–2 h compute median `filt940` over recent still samples; compare to the value stored at last successful calibration. Expose delta + status on the dashboard; optionally set a “model stale” flag when the alert threshold is crossed.
+3. **Drift monitor (still-only median)** — **done 2026-08-08**  
+   Still-only rolling median of `filt940` vs snapshot at last successful calibration (`models/drift_baseline.json`). Advisory `is_stale` when |Δ| ≥ threshold (default 40). See `src/armband_ai/drift_monitor.py`.
 
 4. **Tighter optical checks in `quality.py`** — **partially applied**  
    Milder CV band (~0.045) and slope band (~2.5) now penalize. Further tuning still useful under heavy contact noise.
 
-5. **Light insert-time validation in `db.py`**  
-   Soft-check BPM (e.g. 35–220) and temp sanity on `insert_reading`. Log a warning and optionally clamp extremes rather than failing the insert. SpO₂ < 0 already handled correctly.
+5. **Light insert-time validation in `db.py`** — **done 2026-08-08**  
+   Soft-check BPM (35–220) and temp (30–45 °C) on `insert_reading`. Log a warning and clamp extremes rather than failing the insert. SpO₂ < 0 already handled correctly.
 
 ### Medium priority (ops & UI)
 
