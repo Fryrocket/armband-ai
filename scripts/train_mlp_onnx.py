@@ -1,16 +1,30 @@
 #!/usr/bin/env python3
+
 """Train a small MLP on quality-gated calibration pairs and export ONNX + norm JSON.
 
 Feature order matches WindowFeatures.to_vector() default keys (17 floats).
 
 Usage:
-  python scripts/train_mlp_onnx.py --from-db --min-quality 60 --min-still 0.7
-  python scripts/train_mlp_onnx.py --pairs exports/pairs.csv --epochs 400
-  python scripts/train_mlp_onnx.py --from-db --out-onnx models/glucose_mlp.onnx
+    python scripts/train_mlp_onnx.py --from-db --min-quality 60 --min-still 0.7 --min-clean-streak 10
+    python scripts/train_mlp_onnx.py --pairs exports/pairs.csv --epochs 400
+    python scripts/train_mlp_onnx.py --from-db --out-onnx models/glucose_mlp.onnx
 
 Requires: torch, onnx (and project deps for --from-db).
 
 Exit codes: 0 ok · 1 usage/data · 2 dependency/DB/IO failure
+
+--- FIX APPLIED ---
+--from-db previously called build_calibration_pairs() without min_clean_streak,
+so MLP training pairs silently skipped that gate even when calibrate.py and
+train_multifeature.py enforced it (added it back below, default from config).
+
+_pairs_from_db() also re-pulled raw ppg rows per pair and re-filtered
+stillness with its own ad-hoc rule (">=4 still samples") that didn't match
+build_calibration_pairs' prefer_still logic (any still sample => filter).
+That meant the quality_score attached to a training row could describe a
+different candidate window than the one the feature vector was actually
+computed from. The re-filter below now mirrors prefer_still exactly, so the
+training features are consistent with the gate that admitted the pair.
 """
 
 from __future__ import annotations
@@ -46,7 +60,13 @@ FEATURE_KEYS = [
 ]
 
 
-def _pairs_from_db(min_quality: float, min_still: float, window: int):
+def _pairs_from_db(
+    min_quality: float,
+    min_still: float,
+    window: int,
+    min_clean_streak: int = 0,
+    prefer_still: bool = True,
+):
     from datetime import timedelta
 
     import pandas as pd
@@ -66,9 +86,10 @@ def _pairs_from_db(min_quality: float, min_still: float, window: int):
         base = build_calibration_pairs(
             db_path,
             window_seconds=window,
-            prefer_still=True,
+            prefer_still=prefer_still,
             min_quality=min_quality,
             min_still_fraction=min_still,
+            min_clean_streak=min_clean_streak,
         )
     except DatabaseError:
         raise
@@ -98,10 +119,11 @@ def _pairs_from_db(min_quality: float, min_still: float, window: int):
         candidates = ppg.loc[mask].copy()
         if candidates.empty:
             continue
-        if (candidates.get("moving", 0) == 0).any():
-            still = candidates[candidates["moving"] == 0]
-            if len(still) >= 4:
-                candidates = still
+        # Mirror build_calibration_pairs' prefer_still rule exactly (any still
+        # sample => filter to still-only) so the feature vector we train on
+        # matches the candidate set that earned this pair its quality_score.
+        if prefer_still and (candidates.get("moving", 0) == 0).any():
+            candidates = candidates[candidates["moving"] == 0]
         feats = extract_window_features(candidates)
         if feats is None:
             continue
@@ -144,6 +166,13 @@ def main() -> int:
     parser.add_argument("--pairs", type=str, default=None, help="CSV of pairs / features")
     parser.add_argument("--min-quality", type=float, default=60.0)
     parser.add_argument("--min-still", type=float, default=0.7)
+    parser.add_argument(
+        "--min-clean-streak",
+        type=int,
+        default=10,
+        help="Min consecutive still+optically-stable samples (0=off, recommend 10-15)",
+    )
+    parser.add_argument("--no-prefer-still", action="store_true")
     parser.add_argument("--window", type=int, default=180)
     parser.add_argument("--epochs", type=int, default=400)
     parser.add_argument("--hidden", type=int, default=32)
@@ -164,6 +193,9 @@ def main() -> int:
     if args.epochs < 1 or args.hidden < 2:
         print("ERROR: --epochs >= 1 and --hidden >= 2 required", file=sys.stderr)
         return 1
+    if args.min_clean_streak < 0:
+        print("ERROR: --min-clean-streak must be >= 0", file=sys.stderr)
+        return 1
     if not args.from_db and not args.pairs:
         print("ERROR: provide --from-db or --pairs path", file=sys.stderr)
         return 1
@@ -177,7 +209,13 @@ def main() -> int:
 
     try:
         if args.from_db:
-            pairs = _pairs_from_db(args.min_quality, args.min_still, args.window)
+            pairs = _pairs_from_db(
+                args.min_quality,
+                args.min_still,
+                args.window,
+                min_clean_streak=args.min_clean_streak,
+                prefer_still=not args.no_prefer_still,
+            )
         else:
             pairs = _load_pairs_csv(Path(args.pairs))
     except FileNotFoundError as e:
@@ -198,7 +236,7 @@ def main() -> int:
     if pairs is None or len(pairs) < 8:
         n = 0 if pairs is None else len(pairs)
         print(
-            f"ERROR: need ≥ 8 quality-gated pairs for a tiny MLP (got {n}).",
+            f"ERROR: need >= 8 quality-gated pairs for a tiny MLP (got {n}).",
             file=sys.stderr,
         )
         return 1
