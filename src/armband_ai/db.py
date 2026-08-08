@@ -130,30 +130,47 @@ TEMP_MIN, TEMP_MAX = 30.0, 45.0  # deg C, plausible skin-temp range
 
 
 def _soft_validate(bpm, temp):
-    """Log + clamp out-of-range values. Never raises; never blocks the insert."""
+    """Validate BPM/temp. Never raises; never blocks the insert.
+
+    Firmware publishes bpm=0 / temp=0.0 as sentinels (no finger, pre-sensor
+    loop, or temperature not yet refreshed). Those must stay NULL — clamping
+    them to the floor (35 BPM / 30 °C) fabricates plausible data that
+    _safe_mean then folds into features.
+
+    Rules (mirrors SpO₂ sentinel preservation):
+      • None stays None
+      • <= 0  → None (invalid sentinel)
+      • positive but outside [MIN, MAX] → clamp + warning
+      • in-range positive → keep (int for whole BPM)
+    """
     warnings = []
 
     if bpm is not None:
         try:
             bpm_f = float(bpm)
-            if not (BPM_MIN <= bpm_f <= BPM_MAX):
+            if bpm_f <= 0:
+                bpm = None  # firmware sentinel / no finger
+            elif not (BPM_MIN <= bpm_f <= BPM_MAX):
                 warnings.append(f"bpm {bpm_f} outside [{BPM_MIN}, {BPM_MAX}]")
                 bpm = max(BPM_MIN, min(BPM_MAX, bpm_f))
+                bpm = int(round(bpm)) if bpm == int(bpm) else bpm
             else:
                 bpm = int(round(bpm_f)) if bpm_f == int(bpm_f) else bpm_f
         except (TypeError, ValueError):
-            pass
+            bpm = None
 
     if temp is not None:
         try:
             temp_f = float(temp)
-            if not (TEMP_MIN <= temp_f <= TEMP_MAX):
+            if temp_f <= 0:
+                temp = None  # firmware sentinel / not yet sampled
+            elif not (TEMP_MIN <= temp_f <= TEMP_MAX):
                 warnings.append(f"temp {temp_f} outside [{TEMP_MIN}, {TEMP_MAX}]")
                 temp = max(TEMP_MIN, min(TEMP_MAX, temp_f))
             else:
                 temp = temp_f
         except (TypeError, ValueError):
-            pass
+            temp = None
 
     if warnings:
         log.warning("insert_reading soft-validation: %s", "; ".join(warnings))
@@ -165,8 +182,9 @@ def insert_reading(db_path: str | Path, data: dict[str, Any]) -> int:
     """Insert one PPG reading. Returns the new row id.
 
     Raises DatabaseError on disk/schema failures (logger should catch).
-    Soft-validates BPM (35–220) and temp (30–45 °C): logs warning and clamps;
-    never rejects the row (consistent with existing SpO2 < 0 handling).
+    Soft-validates BPM and temp. Values <= 0 (firmware sentinels) become NULL
+    so they are not folded into feature means. Positive out-of-range values are
+    clamped with a warning. Never rejects the row (matches SpO2 sentinel style).
     """
     received_at = datetime.now(timezone.utc).isoformat()
 
