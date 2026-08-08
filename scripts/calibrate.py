@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from armband_ai.calibration import build_calibration_pairs, fit_baseline
 from armband_ai.config import load_config, ROOT as PROJECT_ROOT
 from armband_ai.db import DatabaseError
+from armband_ai.drift_monitor import snapshot_baseline_from_db
 from armband_ai.queries import count_libre, count_readings
 
 
@@ -201,6 +202,14 @@ def main() -> int:
     except OSError as e:
         print(f"ERROR: cannot save model to {save_path}: {e}", file=sys.stderr)
         return 2
+
+    # Snapshot still-only filt940 median as drift baseline (advisory)
+    try:
+        med = snapshot_baseline_from_db(db_path)
+        if med is not None:
+            print(f"Drift baseline snapshot (still filt940 median) = {med:.2f}")
+    except Exception as e:
+        print(f"Note: drift baseline snapshot skipped: {e}")
 
     return 0
 
