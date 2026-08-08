@@ -50,9 +50,16 @@ def main() -> int:
         return 2
 
     try:
+        log_cfg = cfg.get("logging", {})
+        # Inference gets its own file so RotatingFileHandler + rotate_logs.sh
+        # do not fight the logger process over the same inode.
+        inf_log = log_cfg.get("inference_file") or "logs/inference.log"
         setup_logging(
-            level=cfg["logging"]["level"],
-            log_file=cfg["logging"].get("file"),
+            level=log_cfg.get("level", "INFO"),
+            log_file=inf_log,
+            max_bytes=int(log_cfg.get("max_bytes", 2 * 1024 * 1024)),
+            backup_count=int(log_cfg.get("backup_count", 5)),
+            compression=str(log_cfg.get("compression", "zstd")),
         )
     except OSError as e:
         print(f"ERROR: cannot set up logging: {e}", file=sys.stderr)
