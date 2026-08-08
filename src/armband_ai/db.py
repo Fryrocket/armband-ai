@@ -175,6 +175,9 @@ def insert_reading(db_path: str | Path, data: dict[str, Any]) -> int:
         moving = 1 if moving else 0
     elif moving is None:
         moving = None
+    elif isinstance(moving, (int, float)):
+        # Numeric 0/1 (or 0.0/1.0) from JSON numbers or other sources
+        moving = 1 if moving else 0
     else:
         moving = 1 if str(moving).lower() in ("true", "1", "yes") else 0
 

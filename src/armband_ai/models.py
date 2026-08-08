@@ -7,12 +7,15 @@ Can be trained from quality-gated calibration pairs and used until a Hailo HEF e
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
+
+log = logging.getLogger("armband_ai.models")
 
 # Stable feature order for multi-feature glucose model (must match training)
 DEFAULT_FEATURE_KEYS = [
@@ -97,8 +100,15 @@ def fit_multifeature(
 
     missing = [k for k in keys if k not in pairs.columns]
     if missing:
-        # Allow training on calibration pairs that only have a subset
-        keys = [k for k in keys if k in pairs.columns]
+        # Warn (visible) then allow training on the available subset.
+        # Matches the explicit WARNING behaviour in train_mlp_onnx.py.
+        present = [k for k in keys if k in pairs.columns]
+        log.warning(
+            "fit_multifeature: missing columns %s — training on subset %s",
+            missing,
+            present,
+        )
+        keys = present
         if len(keys) < 1 or len(pairs) < len(keys) + 1:
             return None
 

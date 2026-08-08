@@ -16,6 +16,7 @@ def load_recent(
     minutes: Optional[int] = None,
 ) -> pd.DataFrame:
     """Return recent PPG readings as a DataFrame ordered by time ascending."""
+    init_db(db_path)
     with get_connection(db_path) as conn:
         if minutes is not None:
             sql = """
@@ -43,6 +44,7 @@ def load_recent(
 
 def load_latest(db_path: str | Path) -> Optional[dict]:
     """Return the single most recent PPG reading as a dict, or None."""
+    init_db(db_path)
     with get_connection(db_path) as conn:
         row = conn.execute(
             "SELECT * FROM ppg_readings ORDER BY id DESC LIMIT 1"
@@ -53,6 +55,7 @@ def load_latest(db_path: str | Path) -> Optional[dict]:
 
 
 def count_readings(db_path: str | Path) -> int:
+    init_db(db_path)
     with get_connection(db_path) as conn:
         return conn.execute("SELECT COUNT(*) FROM ppg_readings").fetchone()[0]
 

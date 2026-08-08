@@ -27,6 +27,16 @@ still_fraction/clean_streak) via score_window(), before prefer_still is
 applied. The prefer_still filter still runs afterward, but only to decide
 which rows are averaged into filt940_mean etc. — it no longer affects what
 gets scored or gated.
+
+--- FIX APPLIED (multi-feature columns) ---
+build_calibration_pairs previously only emitted a subset of WindowFeatures
+fields into the pairs DataFrame (filt940_mean/std, raw940_mean, motion_mean,
+still_fraction). models.DEFAULT_FEATURE_KEYS expects 10 features including
+filt940_slope, bpm_mean, bpm_std, moving_transitions, and temp_mean. The
+missing columns caused fit_multifeature to silently train on half the
+intended feature set. All DEFAULT_FEATURE_KEYS fields are now written from
+the already-computed raw_feats WindowFeatures object so multi-feature
+training sees the full signal.
 """
 
 from __future__ import annotations
@@ -116,6 +126,8 @@ def build_calibration_pairs(
         and any exist
       - Aggregate: mean filt940, mean raw940, mean motion, count (over the
         aggregation set)
+      - Also emit the full set of DEFAULT_FEATURE_KEYS fields from raw_feats
+        so multi-feature training receives every intended column.
 
     Returns a DataFrame with one row per successful pair.
     """
@@ -190,9 +202,14 @@ def build_calibration_pairs(
                 "n_samples": len(agg),
                 "filt940_mean": float(agg["filt940"].mean()),
                 "filt940_std": float(agg["filt940"].std()) if len(agg) > 1 else 0.0,
+                "filt940_slope": float(raw_feats.filt940_slope),
                 "raw940_mean": float(agg["raw940"].mean()),
+                "bpm_mean": float(raw_feats.bpm_mean),
+                "bpm_std": float(raw_feats.bpm_std),
                 "motion_mean": float(agg["motion"].mean()),
                 "still_fraction": still_fraction,
+                "moving_transitions": int(raw_feats.moving_transitions),
+                "temp_mean": float(raw_feats.temp_mean),
                 "max_clean_streak": max_clean_streak,
                 "clean_fraction": clean_fraction,
                 "quality_score": quality_score,
