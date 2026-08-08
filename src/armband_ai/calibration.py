@@ -7,6 +7,12 @@ still sample existed). That made still_fraction trivially 1.0 for almost any
 window, silently defeating the min_still_fraction quality gate. still_fraction
 is now computed on the *original* unfiltered window before the prefer_still
 filter is applied, so the gate actually reflects how still the raw window was.
+
+--- CONSECUTIVE-CLEAN ---
+Additionally gate on max_clean_streak (still + optically stable run length)
+computed on the raw window via WindowFeatures. Prefer-still alone can still
+cherry-pick short clean snippets; requiring a sustained clean streak rejects
+those. Default min_clean_streak=0 keeps old behaviour; recommend 10–15.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ import numpy as np
 import pandas as pd
 
 from .db import get_connection, init_db
+from .features import extract_window_features
 from .quality import score_dataframe
 from .queries import load_libre
 
@@ -39,6 +46,7 @@ class BaselineModel:
     prefer_still: bool
     min_quality: float = 0.0
     min_still_fraction: float = 0.0
+    min_clean_streak: int = 0
 
     def predict(self, filt940: float | np.ndarray) -> float | np.ndarray:
         return self.slope * filt940 + self.intercept
@@ -67,6 +75,7 @@ class BaselineModel:
             prefer_still=bool(d.get("prefer_still", True)),
             min_quality=float(d.get("min_quality", 0.0)),
             min_still_fraction=float(d.get("min_still_fraction", 0.0)),
+            min_clean_streak=int(d.get("min_clean_streak", 0)),
         )
 
 
@@ -77,6 +86,7 @@ def build_calibration_pairs(
     min_samples: int = 1,
     min_quality: float = 0.0,
     min_still_fraction: float = 0.0,
+    min_clean_streak: int = 0,
 ) -> pd.DataFrame:
     """Match each Libre reading to nearby armband samples.
 
@@ -84,11 +94,12 @@ def build_calibration_pairs(
     --------
     For each Libre timestamp T:
       - Find PPG rows with received_at in [T - window, T + window]
-      - Compute still_fraction on that *raw* window and gate on it first
+      - Compute still_fraction and max_clean_streak on that *raw* window
+      - Gate on min_still_fraction and min_clean_streak first
       - Prefer non-moving samples if prefer_still and any exist
       - Aggregate: mean filt940, mean raw940, mean motion, count
       - Score window quality (CPU heuristic)
-      - Keep the pair only if ≥ min_samples and quality/still gates pass
+      - Keep the pair only if ≥ min_samples and quality/still/clean gates pass
 
     Returns a DataFrame with one row per successful pair.
     """
@@ -120,11 +131,18 @@ def build_calibration_pairs(
         if candidates.empty:
             continue
 
-        # FIX: compute still_fraction on the raw, unfiltered window *before*
-        # applying the prefer_still filter below — otherwise this gate is
-        # trivially satisfied whenever even one still sample exists.
-        still_fraction = float((candidates["moving"] == 0).mean())
+        # still_fraction + consecutive-clean on the *raw* unfiltered window
+        raw_feats = extract_window_features(candidates)
+        if raw_feats is None:
+            continue
+
+        still_fraction = float(raw_feats.still_fraction)
+        max_clean_streak = int(raw_feats.max_clean_streak)
+        clean_fraction = float(raw_feats.clean_fraction)
+
         if still_fraction < min_still_fraction:
+            continue
+        if max_clean_streak < min_clean_streak:
             continue
 
         if prefer_still and (candidates["moving"] == 0).any():
@@ -155,6 +173,8 @@ def build_calibration_pairs(
                 "raw940_mean": float(candidates["raw940"].mean()),
                 "motion_mean": float(candidates["motion"].mean()),
                 "still_fraction": still_fraction,
+                "max_clean_streak": max_clean_streak,
+                "clean_fraction": clean_fraction,
                 "quality_score": quality_score,
                 "quality_label": quality_label,
                 "time_offset_s": offset_s,
@@ -173,6 +193,7 @@ def fit_baseline(
     prefer_still: bool = True,
     min_quality: float = 0.0,
     min_still_fraction: float = 0.0,
+    min_clean_streak: int = 0,
 ) -> Optional[BaselineModel]:
     """Fit glucose = slope * filt940 + intercept using ordinary least squares."""
     if pairs is None or len(pairs) < 2:
@@ -201,4 +222,5 @@ def fit_baseline(
         prefer_still=prefer_still,
         min_quality=float(min_quality),
         min_still_fraction=float(min_still_fraction),
+        min_clean_streak=int(min_clean_streak),
     )
