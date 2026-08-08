@@ -3,7 +3,7 @@
 
 Usage:
   python scripts/train_multifeature.py
-  python scripts/train_multifeature.py --min-quality 60 --save models/multifeature.json
+  python scripts/train_multifeature.py --min-quality 60 --min-clean-streak 12 --save models/multifeature.json
 
 Exit codes: 0 ok · 1 insufficient data · 2 DB/IO failure
 """
@@ -37,6 +37,12 @@ def main() -> int:
     parser.add_argument("--window", type=int, default=int(cal.get("window_seconds", 180)))
     parser.add_argument("--min-quality", type=float, default=float(cal.get("min_quality", 50)))
     parser.add_argument("--min-still", type=float, default=float(cal.get("min_still_fraction", 0.6)))
+    parser.add_argument(
+        "--min-clean-streak",
+        type=int,
+        default=int(cal.get("min_clean_streak", 0)),
+        help="Min consecutive still+optically-stable samples (0=off, recommend 10–15)",
+    )
     parser.add_argument("--no-prefer-still", action="store_true")
     parser.add_argument(
         "--save",
@@ -48,6 +54,9 @@ def main() -> int:
 
     if args.window <= 0:
         print("ERROR: --window must be positive", file=sys.stderr)
+        return 1
+    if args.min_clean_streak < 0:
+        print("ERROR: --min-clean-streak must be ≥ 0", file=sys.stderr)
         return 1
 
     db_path = cfg["database"]["path"]
@@ -64,7 +73,7 @@ def main() -> int:
 
     print(
         f"Gates: quality>={args.min_quality} still>={args.min_still} "
-        f"window=±{args.window}s"
+        f"clean_streak>={args.min_clean_streak} window=±{args.window}s"
     )
 
     try:
@@ -74,6 +83,7 @@ def main() -> int:
             prefer_still=prefer_still,
             min_quality=args.min_quality,
             min_still_fraction=args.min_still,
+            min_clean_streak=args.min_clean_streak,
         )
     except (DatabaseError, OSError) as e:
         print(f"ERROR: pairing failed: {e}", file=sys.stderr)
