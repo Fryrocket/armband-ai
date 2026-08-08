@@ -26,14 +26,16 @@ logging:
   # Alternatives: gzip | none
   compression: zstd
 
+# Recommended build defaults (match README / SETUP_FULL).
+# Loosen only for desk bring-up if you have almost no still pairs yet.
 calibration:
   window_seconds: 180
   prefer_still: true
-  min_quality: 50
-  min_still_fraction: 0.6
-  # Consecutive still + optically stable samples required (0 = disabled).
-  # Recommend 10–15 under real armband contact noise.
-  min_clean_streak: 0
+  min_quality: 60
+  min_still_fraction: 0.7
+  # Consecutive still + optically stable samples (0 = disabled).
+  # 10–15 under real armband contact noise; start at 10 after first good pairs.
+  min_clean_streak: 10
 
 inference:
   interval_seconds: 30
