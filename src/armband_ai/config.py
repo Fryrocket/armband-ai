@@ -54,13 +54,13 @@ def load_config(path: str | Path | None = None) -> dict:
     log["level"] = os.getenv("LOG_LEVEL", log.get("level", "INFO")).upper()
     log["file"] = os.getenv("LOG_FILE", log.get("file", "logs/mqtt_logger.log"))
 
-    # --- Calibration quality gates ---
+    # --- Calibration quality gates (recommended build defaults) ---
     cal = config.setdefault("calibration", {})
     cal.setdefault("window_seconds", 180)
     cal.setdefault("prefer_still", True)
-    cal.setdefault("min_quality", 50)
-    cal.setdefault("min_still_fraction", 0.6)
-    cal.setdefault("min_clean_streak", 0)
+    cal.setdefault("min_quality", 60)
+    cal.setdefault("min_still_fraction", 0.7)
+    cal.setdefault("min_clean_streak", 10)
     if os.getenv("CAL_MIN_QUALITY") is not None:
         cal["min_quality"] = float(os.getenv("CAL_MIN_QUALITY"))
     if os.getenv("CAL_MIN_STILL") is not None:
