@@ -11,6 +11,19 @@
 
 Config: `logging.compression: zstd | gzip | none`
 
+## Ownership
+
+| Log | Rotated by |
+|-----|-----------|
+| `logs/mqtt_logger.log` | `armband-logger` (Python `RotatingFileHandler`) |
+| `logs/inference.log` | `armband-inference` (Python `RotatingFileHandler`) |
+| `logs/git_auto_pull.log` | `git_auto_pull.sh` (in-script) |
+| anything else in `logs/` | `scripts/rotate_logs.sh` |
+
+`rotate_logs.sh` deliberately **skips** the two Python-managed files. Never rotate a
+file that a running service holds open — the handler keeps writing to the renamed
+inode and the new file stays empty.
+
 ## Error cases
 
 ### 1. `zstd` binary missing (default mode)
