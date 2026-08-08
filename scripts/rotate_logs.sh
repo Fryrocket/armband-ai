@@ -22,6 +22,11 @@ case "$COMPRESSION" in
   *) COMPRESSION="zstd" ;;
 esac
 
+# Logs rotated in-process by Python's RotatingFileHandler. Rotating them here
+# would leave the running service writing to a renamed (then compressed and
+# removed) inode. Override with LOG_PY_MANAGED="" to force.
+PY_MANAGED="${LOG_PY_MANAGED-mqtt_logger.log inference.log}"
+
 compress_file() {
   local src="$1"
   [[ -f "$src" ]] || return 0
@@ -75,6 +80,17 @@ echo "LOG_DIR=$LOG_DIR MAX_BYTES=$MAX_BYTES KEEP=$KEEP COMPRESSION=$COMPRESSION"
 shopt -s nullglob
 for f in "$LOG_DIR"/*.log; do
   [[ "$f" =~ \.log\.[0-9]+(\.(gz|zst))?$ ]] && continue
+  base="$(basename "$f")"
+  skip=0
+  for m in $PY_MANAGED; do
+    if [[ "$base" == "$m" ]]; then
+      skip=1
+    fi
+  done
+  if (( skip )); then
+    echo "skip $base (rotated in-process by Python)"
+    continue
+  fi
   rotate_one "$f"
 done
 echo "done"
