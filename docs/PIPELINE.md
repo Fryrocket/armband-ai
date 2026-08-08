@@ -16,7 +16,7 @@ SQLite  ppg_readings
 scripts/run_inference.py              dashboard (Live / AI tabs)
   features_from_db()                    load_recent / load_latest
   score_window()                        score_from_db()
-  MultiFeatureModel | BaselineModel     BaselineModel.predict()
+  Hailo HEF | MultiFeature | Baseline   estimates + charts
   insert_inference()
   ▼
 inference_results
@@ -54,16 +54,22 @@ Used to:
 - Gate calibration pairs (`min_quality`, `min_still_fraction`)
 - Annotate live dashboard / inference rows
 
-### 4. Models (CPU today)
+### 4. Models
 
 | Model | File | Input |
 |-------|------|--------|
+| Hailo HEF (optional) | `hailo.hef_path` in config | 17-float feature vector (+ optional norm JSON) |
 | Linear baseline | `models/baseline.json` | filt940_mean only |
 | Multi-feature OLS | `models/multifeature.json` | subset of WindowFeatures |
 
-Inference service prefers **multifeature → baseline → quality-only**.
+**Inference priority** (see `inference_service.py`):
 
-Train:
+1. **Hailo HEF** — if `hailo.hef_path` is set, file exists, and the runner is ready
+2. **CPU multi-feature OLS**
+3. **CPU linear baseline**
+4. **Quality-only** (no glucose estimate)
+
+Train CPU models:
 
 ```bash
 python scripts/log_glucose.py 142          # while still
@@ -71,22 +77,24 @@ python scripts/calibrate.py --min-quality 60
 python scripts/train_multifeature.py --min-quality 60
 ```
 
+Optional neural path: [HAILO_MODEL.md](HAILO_MODEL.md).
+
 ### 5. Inference service
 
 `scripts/run_inference.py` every `inference.interval_seconds` (default 30):
 
 1. Feature window
 2. Quality score
-3. Predict glucose if a model file exists
-4. Write `inference_results` with `source` = `cpu_quality` | `cpu_baseline` | `cpu_multifeature`
+3. Predict glucose (Hailo → multi-feature → baseline)
+4. Write `inference_results` with `source` = `hailo` | `cpu_multifeature` | `cpu_baseline` | `cpu_quality`
 
-### 6. Hailo (optional, later)
+### 6. Hailo (optional)
 
 When `hailo-all` is installed and `hailo.hef_path` points at a compiled `.hef`:
 
 - `HailoRunner` loads via `hailo_platform`
-- `infer(feature_vector)` available
-- Not required for logger / dashboard / CPU calibration
+- Feature vector is optionally z-scored with `hailo.norm_path` (or a sibling `*_norm.json`)
+- Falls back to CPU models if the device is not ready
 
 See [HAILO_DRIVER.md](HAILO_DRIVER.md).
 
