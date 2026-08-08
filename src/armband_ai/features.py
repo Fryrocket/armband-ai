@@ -2,6 +2,10 @@
 
 These features are the bridge between the MQTT logger and any future model
 (CPU baseline or Hailo-8 HEF). Keep them deterministic and easy to export.
+
+The default 17-float vector order is frozen for Hailo MLP / HEF training.
+Extra diagnostic fields (max_clean_streak, clean_fraction) live on
+WindowFeatures but are not part of that vector unless callers request them.
 """
 
 from __future__ import annotations
@@ -46,6 +50,10 @@ class WindowFeatures:
     still_fraction: float         # fraction of samples with moving==0
     moving_transitions: int       # count of still↔moving edges
 
+    # Consecutive-clean (still + optically stable)
+    max_clean_streak: int         # longest consecutive clean sample run
+    clean_fraction: float         # fraction of samples that are clean
+
     # Battery (diagnostic)
     batt_mean: float
 
@@ -56,6 +64,7 @@ class WindowFeatures:
         """Flat float vector for model input. Default uses a stable key order."""
         d = self.to_dict()
         if keys is None:
+            # Frozen 17-vector for Hailo / MLP path — do not reorder.
             keys = [
                 "filt940_mean",
                 "filt940_std",
@@ -111,6 +120,67 @@ def _linear_slope(y: pd.Series) -> float:
     return float(np.sum((x - x_mean) * (vals - y_mean)) / denom)
 
 
+def _clean_streak_metrics(
+    moving: pd.Series,
+    filt940: pd.Series,
+    *,
+    roll: int = 5,
+    rel_thresh: float = 0.06,
+    range_frac: float = 0.12,
+) -> tuple[int, float]:
+    """Longest consecutive clean run + clean fraction.
+
+    A sample is *clean* when:
+      - still (moving == 0), and
+      - optically stable vs a short centered rolling median of filt940
+        (|x - med| / max(med, 1) <= rel_thresh) and local relative range
+        is not extreme (range / max(med, 1) <= range_frac).
+
+    When the rolling window has <2 valid points, optical checks are skipped
+    (still alone is enough). Empty input → (0, 0.0).
+    """
+    n = len(moving)
+    if n == 0:
+        return 0, 0.0
+
+    mov = pd.to_numeric(moving, errors="coerce").fillna(1).astype(int).to_numpy()
+    filt = pd.to_numeric(filt940, errors="coerce").to_numpy(dtype=float)
+
+    # Rolling median / range on filt940 (centered; min_periods=1)
+    s = pd.Series(filt)
+    med = s.rolling(window=roll, center=True, min_periods=1).median().to_numpy()
+    lo = s.rolling(window=roll, center=True, min_periods=1).min().to_numpy()
+    hi = s.rolling(window=roll, center=True, min_periods=1).max().to_numpy()
+
+    clean = np.zeros(n, dtype=bool)
+    for i in range(n):
+        if mov[i] != 0:
+            continue
+        m = med[i]
+        if not np.isfinite(m) or not np.isfinite(filt[i]):
+            # still but unusable optics — treat as not clean
+            continue
+        denom = max(abs(m), 1.0)
+        rel_dev = abs(filt[i] - m) / denom
+        rel_range = (hi[i] - lo[i]) / denom if np.isfinite(hi[i]) and np.isfinite(lo[i]) else 0.0
+        if rel_dev <= rel_thresh and rel_range <= range_frac:
+            clean[i] = True
+
+    # Longest consecutive True run
+    max_streak = 0
+    cur = 0
+    for c in clean:
+        if c:
+            cur += 1
+            if cur > max_streak:
+                max_streak = cur
+        else:
+            cur = 0
+
+    clean_fraction = float(clean.mean()) if n else 0.0
+    return int(max_streak), clean_fraction
+
+
 def extract_window_features(df: pd.DataFrame) -> Optional[WindowFeatures]:
     """Build WindowFeatures from a DataFrame of PPG rows (oldest → newest)."""
     if df is None or df.empty:
@@ -144,8 +214,12 @@ def extract_window_features(df: pd.DataFrame) -> Optional[WindowFeatures]:
         still_fraction = float((moving_num == 0).mean())
         transitions = int((moving_num.diff().abs() == 1).sum())
     else:
+        moving_num = pd.Series(np.zeros(n, dtype=int))
         still_fraction = 1.0
         transitions = 0
+
+    filt_series = work.get("filt940", pd.Series(np.zeros(n, dtype=float)))
+    max_clean_streak, clean_fraction = _clean_streak_metrics(moving_num, filt_series)
 
     return WindowFeatures(
         n_samples=n,
@@ -173,6 +247,8 @@ def extract_window_features(df: pd.DataFrame) -> Optional[WindowFeatures]:
         ),
         still_fraction=still_fraction,
         moving_transitions=transitions,
+        max_clean_streak=max_clean_streak,
+        clean_fraction=clean_fraction,
         batt_mean=_safe_mean(work.get("batt", pd.Series(dtype=float))),
     )
 
