@@ -53,6 +53,9 @@ def load_config(path: str | Path | None = None) -> dict:
     log = config.setdefault("logging", {})
     log["level"] = os.getenv("LOG_LEVEL", log.get("level", "INFO")).upper()
     log["file"] = os.getenv("LOG_FILE", log.get("file", "logs/mqtt_logger.log"))
+    log["inference_file"] = os.getenv(
+        "INFERENCE_LOG_FILE", log.get("inference_file", "logs/inference.log")
+    )
 
     # --- Calibration quality gates (recommended build defaults) ---
     cal = config.setdefault("calibration", {})
