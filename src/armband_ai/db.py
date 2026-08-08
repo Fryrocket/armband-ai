@@ -125,10 +125,48 @@ def _normalize_spo2(value: Any) -> Optional[int]:
         return None
 
 
+BPM_MIN, BPM_MAX = 35, 220
+TEMP_MIN, TEMP_MAX = 30.0, 45.0  # deg C, plausible skin-temp range
+
+
+def _soft_validate(bpm, temp):
+    """Log + clamp out-of-range values. Never raises; never blocks the insert."""
+    warnings = []
+
+    if bpm is not None:
+        try:
+            bpm_f = float(bpm)
+            if not (BPM_MIN <= bpm_f <= BPM_MAX):
+                warnings.append(f"bpm {bpm_f} outside [{BPM_MIN}, {BPM_MAX}]")
+                bpm = max(BPM_MIN, min(BPM_MAX, bpm_f))
+            else:
+                bpm = int(round(bpm_f)) if bpm_f == int(bpm_f) else bpm_f
+        except (TypeError, ValueError):
+            pass
+
+    if temp is not None:
+        try:
+            temp_f = float(temp)
+            if not (TEMP_MIN <= temp_f <= TEMP_MAX):
+                warnings.append(f"temp {temp_f} outside [{TEMP_MIN}, {TEMP_MAX}]")
+                temp = max(TEMP_MIN, min(TEMP_MAX, temp_f))
+            else:
+                temp = temp_f
+        except (TypeError, ValueError):
+            pass
+
+    if warnings:
+        log.warning("insert_reading soft-validation: %s", "; ".join(warnings))
+
+    return bpm, temp
+
+
 def insert_reading(db_path: str | Path, data: dict[str, Any]) -> int:
     """Insert one PPG reading. Returns the new row id.
 
     Raises DatabaseError on disk/schema failures (logger should catch).
+    Soft-validates BPM (35–220) and temp (30–45 °C): logs warning and clamps;
+    never rejects the row (consistent with existing SpO2 < 0 handling).
     """
     received_at = datetime.now(timezone.utc).isoformat()
 
@@ -142,6 +180,8 @@ def insert_reading(db_path: str | Path, data: dict[str, Any]) -> int:
 
     spo2 = _normalize_spo2(data.get("spo2"))
 
+    bpm, temp = _soft_validate(data.get("bpm"), data.get("temp"))
+
     try:
         with get_connection(db_path) as conn:
             cur = conn.execute(
@@ -153,9 +193,9 @@ def insert_reading(db_path: str | Path, data: dict[str, Any]) -> int:
                 """,
                 (
                     received_at,
-                    data.get("bpm"),
+                    bpm,
                     spo2,
-                    data.get("temp"),
+                    temp,
                     data.get("motion"),
                     moving,
                     data.get("raw940"),
