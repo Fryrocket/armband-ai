@@ -63,6 +63,23 @@ def score_window(feats: WindowFeatures) -> QualityResult:
         score -= pen
         reasons.append(f"many motion transitions ({feats.moving_transitions}, -{pen:.0f})")
 
+    # Consecutive-clean streak (still + optically stable).
+    # Prefer sustained clean runs; short streaks inside noisy windows are weak.
+    streak = getattr(feats, "max_clean_streak", 0) or 0
+    clean_frac = getattr(feats, "clean_fraction", 0.0) or 0.0
+    if streak < 5:
+        pen = 18.0
+        score -= pen
+        reasons.append(f"short clean streak ({streak}, -{pen:.0f})")
+    elif streak < 10:
+        pen = 10.0
+        score -= pen
+        reasons.append(f"modest clean streak ({streak}, -{pen:.0f})")
+    elif streak < 15 and clean_frac < 0.5:
+        pen = 6.0
+        score -= pen
+        reasons.append(f"clean streak={streak} but clean_frac={clean_frac:.0%} (-{pen:.0f})")
+
     # Sample count / duration
     if feats.n_samples < 5:
         score -= 25.0
@@ -71,19 +88,28 @@ def score_window(feats: WindowFeatures) -> QualityResult:
         score -= 10.0
         reasons.append(f"short window ({feats.n_samples} samples, -10)")
 
-    # 940 nm stability
+    # 940 nm stability (whole-window CV)
     if feats.filt940_mean > 0 and feats.filt940_std > 0:
         cv = feats.filt940_std / max(feats.filt940_mean, 1.0)
         if cv > 0.08:
             pen = min(20.0, (cv - 0.08) * 200.0)
             score -= pen
             reasons.append(f"filt940 unstable (cv={cv:.3f}, -{pen:.0f})")
+        elif cv > 0.045:
+            # Milder band — tighter optical gate recommended in hardening notes
+            pen = min(8.0, (cv - 0.045) * 150.0)
+            score -= pen
+            reasons.append(f"filt940 mild CV={cv:.3f} (-{pen:.0f})")
 
     # Extreme slope often means contact change or motion
     if abs(feats.filt940_slope) > 5.0:
         pen = min(15.0, abs(feats.filt940_slope) * 1.5)
         score -= pen
         reasons.append(f"steep filt940 slope={feats.filt940_slope:.2f} (-{pen:.0f})")
+    elif abs(feats.filt940_slope) > 2.5:
+        pen = min(8.0, abs(feats.filt940_slope) * 1.2)
+        score -= pen
+        reasons.append(f"elevated filt940 slope={feats.filt940_slope:.2f} (-{pen:.0f})")
 
     # BPM sanity (optional soft penalty)
     if feats.bpm_mean > 0:
