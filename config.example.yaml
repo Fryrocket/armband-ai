@@ -31,6 +31,9 @@ calibration:
   prefer_still: true
   min_quality: 50
   min_still_fraction: 0.6
+  # Consecutive still + optically stable samples required (0 = disabled).
+  # Recommend 10–15 under real armband contact noise.
+  min_clean_streak: 0
 
 inference:
   interval_seconds: 30
