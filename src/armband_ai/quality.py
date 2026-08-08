@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Fryrocket
+
 """Rule-based signal quality score for armband windows.
 
 This is the CPU stand-in until a Hailo HEF quality / artifact model exists.
