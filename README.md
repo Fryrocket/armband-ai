@@ -3,7 +3,7 @@
 > **Part of [BGM](https://github.com/Fryrocket/BGM)** – the umbrella wearable blood-glucose monitoring project.  
 > Wearable firmware companion: **[armband-ppg-940nm](https://github.com/Fryrocket/armband-ppg-940nm)**.
 
-**v0.4.2** – Hailo inference path (HEF → CPU fallback), MLP→ONNX trainer, quality-gate + drift docs, multi-feature OLS, HEF-ready `HailoRunner`.
+**v0.4.3** – Consecutive-clean streak gates (`max_clean_streak` / `clean_fraction`), tighter optical penalties, Hailo path, MLP→ONNX trainer, multi-feature OLS.
 
 | Doc | Purpose |
 |-----|---------|
@@ -90,12 +90,12 @@ sudo apt install -y zstd
 
 See **[docs/LIBRE_FLOW.md](docs/LIBRE_FLOW.md)**.
 
-**Quick tip:** Sit still 1–2 minutes with the armband streaming before logging a Libre/fingerstick reading. High still-fraction + stable optics produce the pairs that actually improve the model.
+**Quick tip:** Sit still 1–2 minutes with the armband streaming before logging a Libre/fingerstick reading. High still-fraction + sustained clean streak produce the pairs that actually improve the model.
 
 ```bash
 python scripts/log_glucose.py 142 --notes "still"
-python scripts/calibrate.py --min-quality 60 --min-still 0.7
-python scripts/train_multifeature.py --min-quality 60
+python scripts/calibrate.py --min-quality 60 --min-still 0.7 --min-clean-streak 12
+python scripts/train_multifeature.py --min-quality 60 --min-clean-streak 12
 # optional neural path:
 python scripts/train_mlp_onnx.py --from-db --min-quality 60
 ```
@@ -106,13 +106,15 @@ Calibration pairs are quality-gated before they enter a model. The default path 
 
 **Fixed (2026-08):** `build_calibration_pairs()` used to compute `still_fraction` *after* the prefer-still filter, so the fraction was trivially ~1.0 whenever any still sample existed and `min_still_fraction` stopped gating. It is now computed on the **raw window first**, then prefer-still is applied for aggregation. See `src/armband_ai/calibration.py`.
 
+**Consecutive-clean (2026-08-08):** `WindowFeatures` now exposes `max_clean_streak` and `clean_fraction`. A sample is *clean* when it is still **and** optically stable (relative deviation from a short rolling median of `filt940` and local relative range). Calibration accepts `min_clean_streak` (config key / `--min-clean-streak` / `CAL_MIN_CLEAN_STREAK`; **default 0 = off** for backward compatibility). Recommend **10–15** under real armband contact noise. Quality scoring also penalizes short streaks.
+
 **Recommended tighter gates** (especially under real contact noise and multi-day use):
 
 | Gate | Purpose | Suggested default |
 |------|---------|-------------------|
 | `min_quality` | Overall heuristic score | ≥ 60–65 |
 | `min_still_fraction` | Fraction of non-moving samples | ≥ 0.70 |
-| **Consecutive clean streak** | Sustained still *and* optically stable samples (low rolling CV / range) | ≥ 10–15 samples |
+| **`min_clean_streak`** | Sustained still *and* optically stable samples | ≥ 10–15 samples |
 | Optical CV / range / slope | Reject intermittent contact loss that still passes a simple `moving==0` check | CV ≲ 0.045, relative range ≲ 0.12, \|slope\| ≲ 2.5 |
 
 Prefer-still pairing alone can cherry-pick short clean snippets inside a noisy window. A **consecutive-clean** requirement forces a real sustained stable period before a Libre reading is accepted as a calibration pair.
@@ -135,14 +137,14 @@ Practical improvements ranked by leverage. Most are incremental; the core pipeli
 
 ### High priority (data quality & model health)
 
-1. **Consecutive-clean streak in quality / calibration**  
-   Add `max_clean_streak` and `clean_fraction` to `WindowFeatures`. Require a minimum streak of samples that are both still *and* optically stable (rolling CV / range) before accepting a calibration pair. Complements the fixed raw-window `still_fraction` gate — prefer-still can still cherry-pick short clean snippets inside a noisy window.
+1. **Consecutive-clean streak in quality / calibration** — **done 2026-08-08**  
+   `max_clean_streak` + `clean_fraction` on `WindowFeatures`; calibration gate `min_clean_streak`; quality penalties for short streaks. Enable with `--min-clean-streak 12` or `calibration.min_clean_streak` in config.
 
 2. **Drift monitor (still-only median)**  
    Background job or inference-loop side task: every 1–2 h compute median `filt940` over recent still samples; compare to the value stored at last successful calibration. Expose delta + status on the dashboard; optionally set a “model stale” flag when the alert threshold is crossed.
 
-3. **Tighter optical checks in `quality.py`**  
-   Lower CV threshold (~0.045), add relative peak-to-peak range penalty, lower slope threshold (~2.5). Motion heuristics already work; optical stability is the gap under real contact noise.
+3. **Tighter optical checks in `quality.py`** — **partially applied**  
+   Milder CV band (~0.045) and slope band (~2.5) now penalize. Further tuning still useful under heavy contact noise.
 
 4. **Light insert-time validation in `db.py`**  
    Soft-check BPM (e.g. 35–220) and temp sanity on `insert_reading`. Log a warning and optionally clamp extremes rather than failing the insert. SpO₂ < 0 already handled correctly.
@@ -167,7 +169,7 @@ Practical improvements ranked by leverage. Most are incremental; the core pipeli
    Firmware / DKMS version mismatches, Gen2 vs Gen3 link, venv + system-site-packages notes. Link to Pi / Hailo issues when they appear.
 
 10. **Full `WindowFeatures` at Libre timestamps for multi-feature training**  
-    `build_calibration_pairs` currently aggregates a reduced column set. Computing the full feature vector per pair unlocks a stronger multi-feature model once you have enough high-quality still readings. (`train_mlp_onnx.py --from-db` already rebuilds full features.)
+    `build_calibration_pairs` currently aggregates a reduced column set (plus streak fields). Computing the full feature vector per pair unlocks a stronger multi-feature model once you have enough high-quality still readings. (`train_mlp_onnx.py --from-db` already rebuilds full features.)
 
 11. **Hailo path in the inference loop** — **done in v0.4.2**  
     When `hailo.hef_path` is set and the runner is ready, prefer HEF output and fall back to CPU multi-feature / baseline. See [docs/HAILO_MODEL.md](docs/HAILO_MODEL.md).
