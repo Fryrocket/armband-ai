@@ -104,6 +104,8 @@ python scripts/train_mlp_onnx.py --from-db --min-quality 60
 
 Calibration pairs are quality-gated before they enter a model. The default path already prefers still samples and applies a 0–100 heuristic score.
 
+**Fixed (2026-08):** `build_calibration_pairs()` used to compute `still_fraction` *after* the prefer-still filter, so the fraction was trivially ~1.0 whenever any still sample existed and `min_still_fraction` stopped gating. It is now computed on the **raw window first**, then prefer-still is applied for aggregation. See `src/armband_ai/calibration.py`.
+
 **Recommended tighter gates** (especially under real contact noise and multi-day use):
 
 | Gate | Purpose | Suggested default |
@@ -134,7 +136,7 @@ Practical improvements ranked by leverage. Most are incremental; the core pipeli
 ### High priority (data quality & model health)
 
 1. **Consecutive-clean streak in quality / calibration**  
-   Add `max_clean_streak` and `clean_fraction` to `WindowFeatures`. Require a minimum streak of samples that are both still *and* optically stable (rolling CV / range) before accepting a calibration pair. Prevents prefer-still from accepting intermittent contact-loss windows.
+   Add `max_clean_streak` and `clean_fraction` to `WindowFeatures`. Require a minimum streak of samples that are both still *and* optically stable (rolling CV / range) before accepting a calibration pair. Complements the fixed raw-window `still_fraction` gate — prefer-still can still cherry-pick short clean snippets inside a noisy window.
 
 2. **Drift monitor (still-only median)**  
    Background job or inference-loop side task: every 1–2 h compute median `filt940` over recent still samples; compare to the value stored at last successful calibration. Expose delta + status on the dashboard; optionally set a “model stale” flag when the alert threshold is crossed.
@@ -177,11 +179,11 @@ Practical improvements ranked by leverage. Most are incremental; the core pipeli
 
 Adversarial week-long simulations (contact-loss episodes, bad-still optical noise, temperature swings, slow baseline drift) showed:
 
-- Prefer-still + original quality gates kept nearly 100% of pairs but let drift and residual optical noise into the model (R² collapse over days).
-- Adding consecutive-clean + tighter optical checks produced real rejections of contaminated windows while preserving a usable pair set.
+- Prefer-still + **original** quality gates (before the still_fraction order fix) kept nearly 100% of pairs but let drift and residual optical noise into the model (R² collapse over days). That gate-order bug is fixed in `calibration.py`; `min_still_fraction` now measures the raw window.
+- Prefer-still can still cherry-pick short still snippets inside a noisy window — **consecutive-clean** + tighter optical checks reject those while preserving a usable pair set.
 - Drift monitoring (still-only median vs early baseline) correctly flagged multi-day baseline shift that no within-window score can see.
 
-These two mechanisms together close the main gaps between “clean desk data” and real wearable use.
+Root-cause gate order + consecutive-clean + drift monitoring together close the main gaps between “clean desk data” and real wearable use.
 
 ## systemd
 
