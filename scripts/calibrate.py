@@ -3,7 +3,7 @@
 
 Usage:
   python scripts/calibrate.py
-  python scripts/calibrate.py --window 120 --min-quality 60 --min-still 0.7
+  python scripts/calibrate.py --window 120 --min-quality 60 --min-still 0.7 --min-clean-streak 12
   python scripts/calibrate.py --save models/baseline.json
 
 Exit codes: 0 ok · 1 insufficient data / no pairs · 2 DB/IO failure
@@ -58,6 +58,12 @@ def main() -> int:
         help="Minimum still_fraction 0-1 to keep a pair (default 0.6)",
     )
     parser.add_argument(
+        "--min-clean-streak",
+        type=int,
+        default=int(cal.get("min_clean_streak", 0)),
+        help="Min consecutive still+optically-stable samples (0=off, recommend 10–15)",
+    )
+    parser.add_argument(
         "--save",
         type=str,
         default=None,
@@ -80,6 +86,9 @@ def main() -> int:
     if not (0.0 <= args.min_still <= 1.0):
         print("ERROR: --min-still must be 0–1", file=sys.stderr)
         return 1
+    if args.min_clean_streak < 0:
+        print("ERROR: --min-clean-streak must be ≥ 0", file=sys.stderr)
+        return 1
 
     db_path = cfg["database"]["path"]
     if not Path(db_path).is_absolute():
@@ -101,7 +110,8 @@ def main() -> int:
     print(f"Libre readings: {n_libre}")
     print(
         f"Gates: min_quality={args.min_quality:.0f}  min_still={args.min_still:.0%}  "
-        f"prefer_still={prefer_still}  window=±{args.window}s"
+        f"min_clean_streak={args.min_clean_streak}  prefer_still={prefer_still}  "
+        f"window=±{args.window}s"
     )
 
     if n_libre < 2:
@@ -116,6 +126,7 @@ def main() -> int:
             prefer_still=prefer_still,
             min_quality=args.min_quality,
             min_still_fraction=args.min_still,
+            min_clean_streak=args.min_clean_streak,
         )
     except DatabaseError as e:
         print(f"ERROR: pairing failed: {e}", file=sys.stderr)
@@ -128,8 +139,8 @@ def main() -> int:
 
     if pairs.empty:
         print(
-            "No pairs passed the quality/still gates. "
-            "Loosen --min-quality / --min-still or collect more still data."
+            "No pairs passed the quality/still/clean gates. "
+            "Loosen --min-quality / --min-still / --min-clean-streak or collect more still data."
         )
         return 1
 
@@ -141,6 +152,8 @@ def main() -> int:
             "filt940_mean",
             "n_samples",
             "still_fraction",
+            "max_clean_streak",
+            "clean_fraction",
             "quality_score",
             "quality_label",
             "time_offset_s",
@@ -167,6 +180,7 @@ def main() -> int:
         prefer_still=prefer_still,
         min_quality=args.min_quality,
         min_still_fraction=args.min_still,
+        min_clean_streak=args.min_clean_streak,
     )
     if model is None:
         print("Could not fit model (need ≥ 2 pairs).")
