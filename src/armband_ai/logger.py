@@ -1,4 +1,9 @@
-"""MQTT logger that subscribes to the armband and writes to SQLite."""
+"""MQTT logger that subscribes to the armband and writes to SQLite.
+
+Also accepts iOS companion batch dumps on armband/ios/batch and ACKs them
+on armband/ios/batch/ack so the phone only marks records synced after
+confirmed insert.
+"""
 
 from __future__ import annotations
 
@@ -221,11 +226,14 @@ class ArmbandLogger:
         if reason_code == 0 or str(reason_code) == "Success":
             topic = self.mqtt_cfg["topic"]
             client.subscribe(topic, qos=1)
+            batch_topic = self.mqtt_cfg.get("batch_topic") or "armband/ios/batch"
+            client.subscribe(batch_topic, qos=1)
             log.info(
-                "Connected to %s:%s – subscribed to %s",
+                "Connected to %s:%s – subscribed to %s and %s",
                 self.mqtt_cfg["broker"],
                 self.mqtt_cfg["port"],
                 topic,
+                batch_topic,
             )
         else:
             log.error("MQTT connect failed: %s", reason_code)
@@ -234,6 +242,11 @@ class ArmbandLogger:
         log.warning("Disconnected (rc=%s). Will auto-reconnect...", reason_code)
 
     def _on_message(self, client, userdata, msg):
+        batch_topic = self.mqtt_cfg.get("batch_topic") or "armband/ios/batch"
+        if msg.topic == batch_topic or msg.topic.endswith("/ios/batch"):
+            self._handle_ios_batch(msg)
+            return
+
         try:
             payload = msg.payload.decode("utf-8")
             data: dict[str, Any] = json.loads(payload)
@@ -255,6 +268,69 @@ class ArmbandLogger:
             )
         except Exception:
             log.exception("Failed to store reading")
+
+    def _handle_ios_batch(self, msg):
+        """Accept a batch dump from armband-ios and ACK it.
+
+        Phone only marks records synced after receiving
+        {"batch_id": "...", "status": "ok", "inserted": N} on the ACK topic.
+        """
+        try:
+            payload = msg.payload.decode("utf-8")
+            data: dict[str, Any] = json.loads(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            log.warning("Bad iOS batch on %s: %s", msg.topic, e)
+            return
+
+        batch_id = str(data.get("batch_id") or "")
+        readings = data.get("readings") or []
+        if not isinstance(readings, list):
+            log.warning("iOS batch %s: readings is not a list", batch_id[:8])
+            return
+
+        inserted = 0
+        for r in readings:
+            if not isinstance(r, dict):
+                continue
+            row = {
+                "bpm": r.get("bpm"),
+                "spo2": r.get("spo2"),
+                "temp": r.get("temp"),
+                "motion": r.get("motion"),
+                "moving": r.get("moving"),
+                "raw940": r.get("raw940"),
+                "filt940": r.get("filt940"),
+                "batt": r.get("batt"),
+                "trans": r.get("trans"),
+                "ts": r.get("ts"),
+                "source": data.get("source", "ios"),
+                "batch_id": batch_id,
+                "device_id": data.get("device_id"),
+                "session_id": data.get("session_id"),
+            }
+            try:
+                insert_reading(self.db_path, row)
+                inserted += 1
+                self._msg_count += 1
+            except Exception:
+                log.exception("Failed to store iOS batch reading")
+
+        ack_topic = self.mqtt_cfg.get("batch_ack_topic") or "armband/ios/batch/ack"
+        ack = json.dumps(
+            {"batch_id": batch_id, "status": "ok", "inserted": inserted},
+            ensure_ascii=False,
+        )
+        try:
+            self.client.publish(ack_topic, ack, qos=1)
+        except Exception:
+            log.exception("Failed to publish batch ACK")
+        log.info(
+            "iOS batch %s: inserted %d/%d, ACK → %s",
+            batch_id[:8] if batch_id else "?",
+            inserted,
+            len(readings),
+            ack_topic,
+        )
 
     def start(self) -> None:
         init_db(self.db_path)
