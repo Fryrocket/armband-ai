@@ -11,6 +11,11 @@ Firmware uses non-positive values to mean "invalid / not computed":
 spo2 sentinels are stored as-is and filtered at feature time. bpm/temp
 sentinels are stored as NULL by insert_reading(). Neither is ever clamped
 into a plausible-looking range.
+
+source_id (optional)
+--------------------
+iOS companion sends a UUID per reading. When present, inserts use
+INSERT OR IGNORE against a UNIQUE index so re-sent batches are idempotent.
 """
 
 from __future__ import annotations
@@ -32,53 +37,54 @@ class DatabaseError(RuntimeError):
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS ppg_readings (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    received_at     TEXT    NOT NULL,          -- UTC ISO when Pi received it
+    received_at     TEXT    NOT NULL,
     bpm             INTEGER,
-    spo2            INTEGER,                   -- percent; < 0 (e.g. -1) = invalid / not computed
+    spo2            INTEGER,
     temp            REAL,
-    motion          REAL,                      -- filtered magnitude
-    moving          INTEGER,                   -- 0/1
+    motion          REAL,
+    moving          INTEGER,
     raw940          INTEGER,
     filt940         REAL,
     batt            REAL,
-    trans           TEXT,                      -- still_to_moving / moving_to_still / none
-    conn_ms         INTEGER,                   -- firmware Wi-Fi connect time (ms), if provided
-    boot            INTEGER,                   -- firmware boot counter, if provided
+    trans           TEXT,
+    conn_ms         INTEGER,
+    boot            INTEGER,
+    source_id       TEXT,
     raw_json        TEXT    NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_ppg_received_at ON ppg_readings(received_at);
 CREATE INDEX IF NOT EXISTS idx_ppg_boot       ON ppg_readings(boot);
 CREATE INDEX IF NOT EXISTS idx_ppg_moving     ON ppg_readings(moving);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ppg_source_id ON ppg_readings(source_id) WHERE source_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS libre_readings (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    recorded_at     TEXT    NOT NULL,          -- UTC ISO of the glucose sample itself
-    glucose_mgdl    REAL    NOT NULL,          -- FreeStyle Libre / fingerstick value
-    source          TEXT    DEFAULT 'libre',   -- libre | fingerstick | other
+    recorded_at     TEXT    NOT NULL,
+    glucose_mgdl    REAL    NOT NULL,
+    source          TEXT    DEFAULT 'libre',
     notes           TEXT,
-    created_at      TEXT    NOT NULL           -- when this row was inserted on the Pi
+    created_at      TEXT    NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_libre_recorded_at ON libre_readings(recorded_at);
 
 CREATE TABLE IF NOT EXISTS inference_results (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    computed_at         TEXT    NOT NULL,      -- UTC ISO when this row was written
+    computed_at         TEXT    NOT NULL,
     window_minutes      REAL    NOT NULL,
     n_samples           INTEGER,
     quality_score       REAL,
     quality_label       TEXT,
-    quality_reasons     TEXT,                  -- JSON list
+    quality_reasons     TEXT,
     filt940_mean        REAL,
     still_fraction      REAL,
     bpm_mean            REAL,
-    glucose_estimate    REAL,                  -- null if no model
+    glucose_estimate    REAL,
     baseline_r2         REAL,
     model_path          TEXT,
-    feature_json        TEXT,                  -- full WindowFeatures dict
+    feature_json        TEXT,
     source              TEXT    DEFAULT 'cpu_quality'
-        -- cpu_quality | cpu_baseline | cpu_multifeature | hailo | ...
 );
 
 CREATE INDEX IF NOT EXISTS idx_inference_computed_at ON inference_results(computed_at);
@@ -109,10 +115,18 @@ def get_connection(db_path: str | Path) -> sqlite3.Connection:
 
 
 def init_db(db_path: str | Path) -> None:
-    """Create tables/indexes if missing. Safe to call repeatedly."""
+    """Create tables/indexes if missing. Migrates source_id on older DBs."""
     try:
         with get_connection(db_path) as conn:
             conn.executescript(SCHEMA)
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(ppg_readings)").fetchall()]
+            if "source_id" not in cols:
+                conn.execute("ALTER TABLE ppg_readings ADD COLUMN source_id TEXT")
+                log.info("Migrated ppg_readings: added source_id")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_ppg_source_id "
+                "ON ppg_readings(source_id) WHERE source_id IS NOT NULL"
+            )
             conn.commit()
     except DatabaseError:
         raise
@@ -122,7 +136,6 @@ def init_db(db_path: str | Path) -> None:
 
 
 def _normalize_spo2(value: Any) -> Optional[int]:
-    """Coerce SpO2; keep negative sentinels (invalid). None stays None."""
     if value is None:
         return None
     try:
@@ -132,30 +145,17 @@ def _normalize_spo2(value: Any) -> Optional[int]:
 
 
 BPM_MIN, BPM_MAX = 35, 220
-TEMP_MIN, TEMP_MAX = 30.0, 45.0  # deg C, plausible skin-temp range
+TEMP_MIN, TEMP_MAX = 30.0, 45.0
 
 
 def _soft_validate(bpm, temp):
-    """Validate BPM/temp. Never raises; never blocks the insert.
-
-    Firmware publishes bpm=0 / temp=0.0 as sentinels (no finger, pre-sensor
-    loop, or temperature not yet refreshed). Those must stay NULL — clamping
-    them to the floor (35 BPM / 30 °C) fabricates plausible data that
-    _safe_mean then folds into features.
-
-    Rules (mirrors SpO₂ sentinel preservation):
-      • None stays None
-      • <= 0  → None (invalid sentinel)
-      • positive but outside [MIN, MAX] → clamp + warning
-      • in-range positive → keep (int for whole BPM)
-    """
     warnings = []
 
     if bpm is not None:
         try:
             bpm_f = float(bpm)
             if bpm_f <= 0:
-                bpm = None  # firmware sentinel / no finger
+                bpm = None
             elif not (BPM_MIN <= bpm_f <= BPM_MAX):
                 warnings.append(f"bpm {bpm_f} outside [{BPM_MIN}, {BPM_MAX}]")
                 bpm = max(BPM_MIN, min(BPM_MAX, bpm_f))
@@ -169,7 +169,7 @@ def _soft_validate(bpm, temp):
         try:
             temp_f = float(temp)
             if temp_f <= 0:
-                temp = None  # firmware sentinel / not yet sampled
+                temp = None
             elif not (TEMP_MIN <= temp_f <= TEMP_MAX):
                 warnings.append(f"temp {temp_f} outside [{TEMP_MIN}, {TEMP_MAX}]")
                 temp = max(TEMP_MIN, min(TEMP_MAX, temp_f))
@@ -185,12 +185,11 @@ def _soft_validate(bpm, temp):
 
 
 def insert_reading(db_path: str | Path, data: dict[str, Any]) -> int:
-    """Insert one PPG reading. Returns the new row id.
+    """Insert one PPG reading. Returns new row id, or -1 if ignored as duplicate source_id.
 
-    Raises DatabaseError on disk/schema failures (logger should catch).
-    Soft-validates BPM and temp. Values <= 0 (firmware sentinels) become NULL
-    so they are not folded into feature means. Positive out-of-range values are
-    clamped with a warning. Never rejects the row (matches SpO2 sentinel style).
+    When data contains 'id' or 'source_id' (iOS UUID), uses INSERT OR IGNORE so
+    re-sent batches are idempotent. Callers treating "accepted" should count
+    both positive ids and -1 as success for ACK purposes.
     """
     received_at = datetime.now(timezone.utc).isoformat()
 
@@ -200,49 +199,69 @@ def insert_reading(db_path: str | Path, data: dict[str, Any]) -> int:
     elif moving is None:
         moving = None
     elif isinstance(moving, (int, float)):
-        # Numeric 0/1 (or 0.0/1.0) from JSON numbers or other sources
         moving = 1 if moving else 0
     else:
         moving = 1 if str(moving).lower() in ("true", "1", "yes") else 0
 
     spo2 = _normalize_spo2(data.get("spo2"))
-
     bpm, temp = _soft_validate(data.get("bpm"), data.get("temp"))
+
+    source_id = data.get("source_id") or data.get("id")
+    if source_id is not None:
+        source_id = str(source_id)
 
     try:
         with get_connection(db_path) as conn:
-            cur = conn.execute(
-                """
-                INSERT INTO ppg_readings (
-                    received_at, bpm, spo2, temp, motion, moving,
-                    raw940, filt940, batt, trans, conn_ms, boot, raw_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    received_at,
-                    bpm,
-                    spo2,
-                    temp,
-                    data.get("motion"),
-                    moving,
-                    data.get("raw940"),
-                    data.get("filt940"),
-                    data.get("batt"),
-                    data.get("trans"),
-                    data.get("conn_ms"),
-                    data.get("boot"),
-                    json.dumps(data, ensure_ascii=False),
-                ),
-            )
-            conn.commit()
-            return cur.lastrowid or 0
+            if source_id:
+                cur = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO ppg_readings (
+                        received_at, bpm, spo2, temp, motion, moving,
+                        raw940, filt940, batt, trans, conn_ms, boot,
+                        source_id, raw_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        received_at, bpm, spo2, temp,
+                        data.get("motion"), moving,
+                        data.get("raw940"), data.get("filt940"),
+                        data.get("batt"), data.get("trans"),
+                        data.get("conn_ms"), data.get("boot"),
+                        source_id,
+                        json.dumps(data, ensure_ascii=False),
+                    ),
+                )
+                conn.commit()
+                if cur.rowcount == 0:
+                    return -1  # duplicate source_id ignored
+                return cur.lastrowid or 0
+            else:
+                cur = conn.execute(
+                    """
+                    INSERT INTO ppg_readings (
+                        received_at, bpm, spo2, temp, motion, moving,
+                        raw940, filt940, batt, trans, conn_ms, boot,
+                        source_id, raw_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        received_at, bpm, spo2, temp,
+                        data.get("motion"), moving,
+                        data.get("raw940"), data.get("filt940"),
+                        data.get("batt"), data.get("trans"),
+                        data.get("conn_ms"), data.get("boot"),
+                        None,
+                        json.dumps(data, ensure_ascii=False),
+                    ),
+                )
+                conn.commit()
+                return cur.lastrowid or 0
     except DatabaseError:
         raise
     except sqlite3.Error as e:
         log.exception("insert_reading failed")
         raise DatabaseError(f"insert_reading failed: {e}") from e
     except OSError as e:
-        # disk full, permission, etc.
         log.exception("insert_reading OS error")
         raise DatabaseError(f"insert_reading OS error: {e}") from e
 
@@ -254,15 +273,9 @@ def insert_libre(
     source: str = "libre",
     notes: Optional[str] = None,
 ) -> int:
-    """Insert a FreeStyle Libre / reference glucose reading.
-
-    recorded_at should be UTC ISO of the *sample*. If omitted, uses now.
-    Call init_db() once at process start; this does not re-run schema every time.
-    """
     now = datetime.now(timezone.utc).isoformat()
     if recorded_at is None:
         recorded_at = now
-
     try:
         with get_connection(db_path) as conn:
             cur = conn.execute(
@@ -314,7 +327,6 @@ def insert_inference(
     feature_json: Optional[dict[str, Any]],
     source: str = "cpu_quality",
 ) -> int:
-    """Persist one inference / quality snapshot."""
     now = datetime.now(timezone.utc).isoformat()
     try:
         with get_connection(db_path) as conn:
@@ -329,18 +341,11 @@ def insert_inference(
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    now,
-                    float(window_minutes),
-                    int(n_samples),
-                    quality_score,
-                    quality_label,
+                    now, float(window_minutes), int(n_samples),
+                    quality_score, quality_label,
                     json.dumps(quality_reasons or [], ensure_ascii=False),
-                    filt940_mean,
-                    still_fraction,
-                    bpm_mean,
-                    glucose_estimate,
-                    baseline_r2,
-                    model_path,
+                    filt940_mean, still_fraction, bpm_mean,
+                    glucose_estimate, baseline_r2, model_path,
                     json.dumps(feature_json or {}, ensure_ascii=False),
                     source,
                 ),
@@ -358,7 +363,6 @@ def insert_inference(
 
 
 def integrity_check(db_path: str | Path) -> str:
-    """Run PRAGMA integrity_check; returns 'ok' or error detail."""
     try:
         with get_connection(db_path) as conn:
             row = conn.execute("PRAGMA integrity_check;").fetchone()
