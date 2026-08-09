@@ -6,6 +6,7 @@ on:
     paths-ignore:
       - 'README.md'
       - '.github/workflows/**'
+      - '.github/cache-stats.json'
 
 permissions:
   contents: write
@@ -40,22 +41,52 @@ jobs:
 
       - name: Cache statistics
         run: |
-          echo "### Cache statistics" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.cache-pip.outputs.cache-hit }}" = "true" ]; then
-            echo "**pip cache: HIT** ✅" >> $GITHUB_STEP_SUMMARY
-            echo "pip cache: HIT"
-          else
-            echo "**pip cache: MISS** (cold start)" >> $GITHUB_STEP_SUMMARY
-            echo "pip cache: MISS (cold start)"
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Runner OS | \`${{ runner.os }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Python | 3.12 |" >> $GITHUB_STEP_SUMMARY
-          echo "| Cache key | \`${{ runner.os }}-pip-py3.12-...\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Cache hit | \`${{ steps.cache-pip.outputs.cache-hit }}\` |" >> $GITHUB_STEP_SUMMARY
+          python3 << 'PY'
+          import json, os, pathlib
+
+          stats_path = pathlib.Path(".github/cache-stats.json")
+          stats_path.parent.mkdir(parents=True, exist_ok=True)
+
+          if stats_path.exists():
+              stats = json.loads(stats_path.read_text())
+          else:
+              stats = {"hits": 0, "misses": 0, "runs": 0}
+
+          hit = os.environ.get("CACHE_HIT", "false").lower() == "true"
+          if hit:
+              stats["hits"] += 1
+          else:
+              stats["misses"] += 1
+          stats["runs"] += 1
+
+          total = stats["hits"] + stats["misses"]
+          pct = (stats["hits"] / total * 100.0) if total else 0.0
+          stats["hit_percentage"] = round(pct, 1)
+
+          stats_path.write_text(json.dumps(stats, indent=2) + "\n")
+
+          status = "HIT ✅" if hit else "MISS (cold start)"
+          print(f"pip cache: {status}")
+          print(f"Lifetime so far: {stats['hits']} hits / {stats['misses']} misses "
+                f"({stats['hit_percentage']}% hit rate over {stats['runs']} runs)")
+
+          summary = os.environ["GITHUB_STEP_SUMMARY"]
+          with open(summary, "a") as f:
+              f.write("### Cache statistics\n\n")
+              f.write(f"**pip cache: {status}**\n\n")
+              f.write("| Item | Value |\n")
+              f.write("|------|-------|\n")
+              f.write(f"| This run | `{'hit' if hit else 'miss'}` |\n")
+              f.write(f"| Lifetime hits | `{stats['hits']}` |\n")
+              f.write(f"| Lifetime misses | `{stats['misses']}` |\n")
+              f.write(f"| Total runs | `{stats['runs']}` |\n")
+              f.write(f"| **Hit percentage** | **`{stats['hit_percentage']}%`** |\n")
+              f.write(f"| Runner OS | `{os.environ.get('RUNNER_OS', 'Linux')}` |\n")
+              f.write("| Python | 3.12 |\n")
+          PY
+        env:
+          CACHE_HIT: ${{ steps.cache-pip.outputs.cache-hit }}
+          RUNNER_OS: ${{ runner.os }}
 
       - name: Regenerate File index
         run: |
@@ -68,12 +99,17 @@ jobs:
 
       - name: Commit and push if changed
         run: |
-          if git diff --quiet README.md; then
-            echo "No changes to README.md"
+          CHANGED=0
+          git diff --quiet README.md || CHANGED=1
+          git diff --quiet .github/cache-stats.json 2>/dev/null || CHANGED=1
+
+          if [ "$CHANGED" -eq 0 ]; then
+            echo "No changes to commit"
             exit 0
           fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md
-          git commit -m "chore: auto-update File index [skip ci]"
+          git add README.md .github/cache-stats.json 2>/dev/null || true
+          git commit -m "chore: auto-update File index + cache stats [skip ci]" || exit 0
           git push
