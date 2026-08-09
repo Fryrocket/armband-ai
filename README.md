@@ -100,107 +100,62 @@ python scripts/train_multifeature.py --min-quality 60 --min-clean-streak 12
 python scripts/train_mlp_onnx.py --from-db --min-quality 60
 ```
 
-### Quality gates (calibration)
+## File index
 
-Calibration pairs are quality-gated before they enter a model. The default path already prefers still samples and applies a 0–100 heuristic score.
+**Package — `src/armband_ai/`**
+- [__init__.py](src/armband_ai/__init__.py)
+- [calibration.py](src/armband_ai/calibration.py) — fingerstick/Libre pairing, `build_calibration_pairs`, `fit_multifeature`
+- [config.py](src/armband_ai/config.py) — YAML config loading and defaults
+- [db.py](src/armband_ai/db.py) — SQLite writes, insert-time soft validation
+- [drift_monitor.py](src/armband_ai/drift_monitor.py) — still-only rolling median of `filt940` vs baseline
+- [features.py](src/armband_ai/features.py) — 17-float feature vector, clean streak
+- [hailo.py](src/armband_ai/hailo.py) — Hailo HEF inference path
+- [inference_service.py](src/armband_ai/inference_service.py) — CPU/MLP/ONNX/Hailo priority
+- [logger.py](src/armband_ai/logger.py) — MQTT logger, iOS batch receiver + ACK
+- [models.py](src/armband_ai/models.py)
+- [quality.py](src/armband_ai/quality.py) — raw-window quality gates
+- [queries.py](src/armband_ai/queries.py) — read helpers, `init_db`
 
-**Fixed (2026-08):** Three related gate-order bugs in `build_calibration_pairs()`:
+**Dashboard**
+- [dashboard/app.py](dashboard/app.py) — Streamlit live dashboard
 
-1. **`still_fraction`** used to be computed *after* the prefer-still filter → trivially ~1.0. Now computed on the **raw window first**.
-2. **`quality_score`** used to be scored *after* the same filter (via `score_dataframe` on the cleaned subset). Because the quality heuristic is dominated by motion terms, this silently inflated scores. Quality is now computed from the same raw `WindowFeatures` via `score_window()` **before** prefer-still is applied.
-3. **Consecutive-clean streak** (`max_clean_streak` / `clean_fraction`) is also evaluated on the raw window and gated before any filtering. Prefer-still alone can no longer cherry-pick short clean snippets.
+**Docs**
+- [docs/PIPELINE.md](docs/PIPELINE.md)
+- [docs/LIBRE_FLOW.md](docs/LIBRE_FLOW.md)
+- [docs/HAILO_MODEL.md](docs/HAILO_MODEL.md)
+- [docs/HAILO_DRIVER.md](docs/HAILO_DRIVER.md)
+- [docs/LOG_ROTATION.md](docs/LOG_ROTATION.md)
+- [docs/GIT_AUTO_PULL.md](docs/GIT_AUTO_PULL.md)
+- [HARDWARE.md](HARDWARE.md)
 
-Prefer-still still controls which rows are averaged into `filt940_mean` etc.; it no longer affects what is scored or gated. See `src/armband_ai/calibration.py`.
+**Scripts**
+- [scripts/calibrate.py](scripts/calibrate.py)
+- [scripts/train_multifeature.py](scripts/train_multifeature.py)
+- [scripts/train_mlp_onnx.py](scripts/train_mlp_onnx.py)
+- [scripts/log_glucose.py](scripts/log_glucose.py)
+- [scripts/export_csv.py](scripts/export_csv.py)
+- [scripts/export_features.py](scripts/export_features.py)
+- [scripts/rotate_logs.sh](scripts/rotate_logs.sh)
+- [scripts/git_auto_pull.sh](scripts/git_auto_pull.sh)
+- [scripts/install_git_hooks.sh](scripts/install_git_hooks.sh)
+- [scripts/hailo_diagnose.py](scripts/hailo_diagnose.py)
+- [scripts/hailo_identify.py](scripts/hailo_identify.py)
+- [scripts/run_logger.py](scripts/run_logger.py)
+- [scripts/run_inference.py](scripts/run_inference.py)
+- [scripts/run_dashboard.sh](scripts/run_dashboard.sh)
+- [scripts/run_quality.py](scripts/run_quality.py)
 
-**Recommended tighter gates** (especially under real contact noise and multi-day use):
+**Systemd units**
+- [systemd/armband-logger.service](systemd/armband-logger.service)
+- [systemd/armband-inference.service](systemd/armband-inference.service)
+- [systemd/armband-dashboard.service](systemd/armband-dashboard.service)
+- [systemd/armband-git-pull.service](systemd/armband-git-pull.service)
+- [systemd/armband-git-pull.timer](systemd/armband-git-pull.timer)
 
-| Gate | Purpose | Suggested default |
-|------|---------|-------------------|
-| `min_quality` | Overall heuristic score | ≥ 60–65 |
-| `min_still_fraction` | Fraction of non-moving samples | ≥ 0.70 |
-| **`min_clean_streak`** | Sustained still *and* optically stable samples | ≥ 10–15 samples |
-| Optical CV / range / slope | Reject intermittent contact loss that still passes a simple `moving==0` check | CV ≲ 0.045, relative range ≲ 0.12, \|slope\| ≲ 2.5 |
-
-Prefer-still pairing alone can cherry-pick short clean snippets inside a noisy window. A **consecutive-clean** requirement forces a real sustained stable period before a Libre reading is accepted as a calibration pair.
-
-### Drift monitoring
-
-Within-window quality cannot see slow baseline shift (contact change, temperature, sensor aging). Track a **still-only rolling median** of `filt940` (e.g. every 1–2 hours) and compare it to the median at the last successful calibration:
-
-| \|Δ median\| vs last cal | Action |
-|--------------------------|--------|
-| ≳ 40 | Normal / mild warn |
-| ≳ 80 | Alert — consider re-calibration |
-| sustained large shift | Mark model stale; collect new still Libre pairs |
-
-Implemented in `src/armband_ai/drift_monitor.py`. Successful `calibrate.py` (and train scripts) snapshot the still-only median to `models/drift_baseline.json`. Use `compute_drift_from_db()` or the DriftMonitor class to surface delta + `is_stale` on the dashboard. Advisory only — does not block inference.
-
-## Hardening recommendations
-
-Practical improvements ranked by leverage. Most are incremental; the core pipeline already runs without them.
-
-### High priority (data quality & model health)
-
-1. **Consecutive-clean streak in quality / calibration** — **done 2026-08-08**  
-   `max_clean_streak` + `clean_fraction` on `WindowFeatures`; calibration gate `min_clean_streak`; quality penalties for short streaks. Enable with `--min-clean-streak 12` or `calibration.min_clean_streak` in config.
-
-2. **Quality score on raw window** — **done 2026-08-08**  
-   `score_window(raw_feats)` now runs before prefer-still filtering, so `min_quality` reflects the true window, not a motion-scrubbed subset.
-
-3. **Drift monitor (still-only median)** — **done 2026-08-08**  
-   Still-only rolling median of `filt940` vs snapshot at last successful calibration (`models/drift_baseline.json`). Advisory `is_stale` when |Δ| ≥ threshold (default 40). See `src/armband_ai/drift_monitor.py`.
-
-4. **Tighter optical checks in `quality.py`** — **partially applied**  
-   Milder CV band (~0.045) and slope band (~2.5) now penalize. Further tuning still useful under heavy contact noise.
-
-5. **Light insert-time validation in `db.py`** — **done 2026-08-08**  
-   Soft-check BPM (35–220) and temp (30–45 °C) on `insert_reading`. Log a warning and clamp extremes rather than failing the insert. SpO₂ < 0 already handled correctly.
-
-### Medium priority (ops & UI)
-
-6. **Schema versioning**  
-   Add a `schema_version` table (or PRAGMA user_version) and small migration helpers before adding columns (e.g. lag-corrected estimates, Hailo scores, drift snapshots). `init_db` alone is fine while the schema is stable.
-
-7. **Dashboard delete confirmation**  
-   Calibration tab: require an explicit confirm step before `delete_libre` so a fat-fingered id does not drop a good reference.
-
-8. **Cache `count_readings`**  
-   Live tab currently counts on every refresh. Cache for 30–60 s (or only recompute every N auto-refreshes). Negligible today; avoids future cost as the table grows.
-
-9. **Log-compression fallback visibility**  
-   Rotation already falls back to plain `.1` when `zstd` is missing. Surface a one-line status on the dashboard (or a startup warning metric) so the fallback is not silent forever.
-
-### Lower priority (structure & polish)
-
-10. **Known-issues section in `docs/HAILO_DRIVER.md`**  
-    Firmware / DKMS version mismatches, Gen2 vs Gen3 link, venv + system-site-packages notes. Link to Pi / Hailo issues when they appear.
-
-11. **Full `WindowFeatures` at Libre timestamps for multi-feature training**  
-    `build_calibration_pairs` currently aggregates a reduced column set (plus streak fields). Computing the full feature vector per pair unlocks a stronger multi-feature model once you have enough high-quality still readings. (`train_mlp_onnx.py --from-db` already rebuilds full features.)
-
-12. **Hailo path in the inference loop** — **done in v0.4.2**  
-    When `hailo.hef_path` is set and the runner is ready, prefer HEF output and fall back to CPU multi-feature / baseline. See [docs/HAILO_MODEL.md](docs/HAILO_MODEL.md).
-
-13. **Retention / vacuum**  
-    On a 250 GB SSD you have headroom, but a simple retention policy (or periodic export + `VACUUM`) keeps the DB tidy after months of continuous logging.
-
-### Testing notes (simulation findings)
-
-Adversarial week-long simulations (contact-loss episodes, bad-still optical noise, temperature swings, slow baseline drift) showed:
-
-- Prefer-still + **original** quality gates (before the still_fraction / quality_score order fixes) kept nearly 100% of pairs but let drift and residual optical noise into the model (R² collapse over days). Both gate-order bugs are fixed in `calibration.py`; `min_still_fraction` and `min_quality` now measure the raw window.
-- Prefer-still can still cherry-pick short still snippets inside a noisy window — **consecutive-clean** + tighter optical checks reject those while preserving a usable pair set.
-- Drift monitoring (still-only median vs early baseline) correctly flagged multi-day baseline shift that no within-window score can see.
-
-Root-cause gate order (still + quality) + consecutive-clean + drift monitoring together close the main gaps between “clean desk data” and real wearable use.
-
-## systemd
-
-```bash
-sudo cp systemd/*.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now armband-logger armband-inference armband-dashboard
-```
+**Config**
+- [config.example.yaml](config.example.yaml)
+- [requirements.txt](requirements.txt)
+- [LICENSE](LICENSE)
 
 ## License
 
