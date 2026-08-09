@@ -8,6 +8,10 @@ mqtt:
   broker: "localhost"
   port: 1883
   topic: "armband/ppg"
+  # iOS companion batch dump (armband-ios publishes here)
+  batch_topic: "armband/ios/batch"
+  # ACK so the phone only marks records synced after confirmed insert
+  batch_ack_topic: "armband/ios/batch/ack"
   client_id: "armband_ai_logger"
   username: ""
   password: ""
