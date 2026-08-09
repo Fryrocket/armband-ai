@@ -132,6 +132,7 @@ python scripts/train_mlp_onnx.py --from-db --min-quality 60
 - [scripts/calibrate.py](scripts/calibrate.py)
 - [scripts/export_csv.py](scripts/export_csv.py)
 - [scripts/export_features.py](scripts/export_features.py)
+- [scripts/generate_changelog.py](scripts/generate_changelog.py)
 - [scripts/git_auto_pull.sh](scripts/git_auto_pull.sh)
 - [scripts/hailo_diagnose.py](scripts/hailo_diagnose.py)
 - [scripts/hailo_identify.py](scripts/hailo_identify.py)
