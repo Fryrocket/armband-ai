@@ -3,6 +3,12 @@
 Also accepts iOS companion batch dumps on armband/ios/batch and ACKs them
 on armband/ios/batch/ack so the phone only marks records synced after
 confirmed insert (idempotent via source_id).
+
+ACK contract (Fix Pack 2):
+  {"batch_id": "...", "status": "ok", "count": N, "inserted": new_rows,
+   "duplicates": already_present}
+Success on the phone is inserted + duplicates >= count. Missing
+`duplicates` field is treated as 0 by older/un-updated phones.
 """
 
 from __future__ import annotations
@@ -179,7 +185,7 @@ class ArmbandLogger:
             log.exception("Failed to store reading")
 
     def _handle_ios_batch(self, msg):
-        """Accept iOS batch; count new + duplicate-ignored as accepted for ACK."""
+        """Accept iOS batch; report new inserts vs already-present duplicates in ACK."""
         try:
             payload = msg.payload.decode("utf-8")
             data: dict[str, Any] = json.loads(payload)
@@ -191,7 +197,9 @@ class ArmbandLogger:
         if not isinstance(readings, list):
             log.warning("iOS batch %s: readings is not a list", batch_id[:8])
             return
-        accepted = 0
+
+        inserted = 0   # rows actually written this call
+        duplicates = 0  # rows already present (INSERT OR IGNORE)
         for r in readings:
             if not isinstance(r, dict):
                 continue
@@ -206,18 +214,31 @@ class ArmbandLogger:
             }
             try:
                 result = insert_reading(self.db_path, row)
-                accepted += 1
                 if result and result > 0:
+                    inserted += 1
                     self._msg_count += 1
+                else:
+                    # -1 or 0 from INSERT OR IGNORE = already present
+                    duplicates += 1
             except Exception:
                 log.exception("Failed to store iOS batch reading")
+
         ack_topic = self.mqtt_cfg.get("batch_ack_topic") or "armband/ios/batch/ack"
-        ack = json.dumps({"batch_id": batch_id, "status": "ok", "inserted": accepted}, ensure_ascii=False)
+        ack = {
+            "batch_id": batch_id,
+            "status": "ok",
+            "count": len(readings),
+            "inserted": inserted,
+            "duplicates": duplicates,
+        }
         try:
-            self.client.publish(ack_topic, ack, qos=1)
+            self.client.publish(ack_topic, json.dumps(ack, ensure_ascii=False), qos=1)
         except Exception:
             log.exception("Failed to publish batch ACK")
-        log.info("iOS batch %s: accepted %d/%d, ACK → %s", batch_id[:8] if batch_id else "?", accepted, len(readings), ack_topic)
+        log.info(
+            "iOS batch %s: inserted=%d duplicates=%d / %d, ACK → %s",
+            batch_id[:8] if batch_id else "?", inserted, duplicates, len(readings), ack_topic,
+        )
 
     def start(self) -> None:
         init_db(self.db_path)
