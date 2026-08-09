@@ -21,14 +21,41 @@ jobs:
           fetch-depth: 1
 
       - name: Set up Python
+        id: setup-python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip'
-          cache-dependency-path: |
-            **/requirements*.txt
-            **/pyproject.toml
-            **/setup.py
+
+      - name: Cache pip
+        id: cache-pip
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ${{ env.pythonLocation }}
+          key: ${{ runner.os }}-pip-py3.12-${{ hashFiles('**/requirements*.txt', '**/pyproject.toml', '**/setup.py') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-py3.12-
+            ${{ runner.os }}-pip-
+
+      - name: Cache statistics
+        run: |
+          echo "### Cache statistics" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.cache-pip.outputs.cache-hit }}" = "true" ]; then
+            echo "**pip cache: HIT** ✅" >> $GITHUB_STEP_SUMMARY
+            echo "pip cache: HIT"
+          else
+            echo "**pip cache: MISS** (cold start)" >> $GITHUB_STEP_SUMMARY
+            echo "pip cache: MISS (cold start)"
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Runner OS | \`${{ runner.os }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Python | 3.12 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cache key | \`${{ runner.os }}-pip-py3.12-...\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cache hit | \`${{ steps.cache-pip.outputs.cache-hit }}\` |" >> $GITHUB_STEP_SUMMARY
 
       - name: Regenerate File index
         run: |
