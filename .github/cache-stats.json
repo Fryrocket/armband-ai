@@ -1,6 +1,6 @@
 {
-  "hits": 1,
+  "hits": 2,
   "misses": 1,
-  "runs": 2,
-  "hit_percentage": 50.0
+  "runs": 3,
+  "hit_percentage": 66.7
 }
