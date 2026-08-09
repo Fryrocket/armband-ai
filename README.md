@@ -103,59 +103,61 @@ python scripts/train_mlp_onnx.py --from-db --min-quality 60
 ## File index
 
 **Package — `src/armband_ai/`**
-- [__init__.py](src/armband_ai/__init__.py)
-- [calibration.py](src/armband_ai/calibration.py) — fingerstick/Libre pairing, `build_calibration_pairs`, `fit_multifeature`
-- [config.py](src/armband_ai/config.py) — YAML config loading and defaults
-- [db.py](src/armband_ai/db.py) — SQLite writes, insert-time soft validation
-- [drift_monitor.py](src/armband_ai/drift_monitor.py) — still-only rolling median of `filt940` vs baseline
-- [features.py](src/armband_ai/features.py) — 17-float feature vector, clean streak
-- [hailo.py](src/armband_ai/hailo.py) — Hailo HEF inference path
-- [inference_service.py](src/armband_ai/inference_service.py) — CPU/MLP/ONNX/Hailo priority
-- [logger.py](src/armband_ai/logger.py) — MQTT logger, iOS batch receiver + ACK
-- [models.py](src/armband_ai/models.py)
-- [quality.py](src/armband_ai/quality.py) — raw-window quality gates
-- [queries.py](src/armband_ai/queries.py) — read helpers, `init_db`
+- [src/armband_ai/__init__.py](src/armband_ai/__init__.py)
+- [src/armband_ai/calibration.py](src/armband_ai/calibration.py) — fingerstick/Libre pairing, build_calibration_pairs, fit_multifeature
+- [src/armband_ai/config.py](src/armband_ai/config.py) — YAML config loading and defaults
+- [src/armband_ai/db.py](src/armband_ai/db.py) — SQLite writes, insert-time soft validation
+- [src/armband_ai/drift_monitor.py](src/armband_ai/drift_monitor.py) — still-only rolling median of filt940 vs baseline
+- [src/armband_ai/features.py](src/armband_ai/features.py) — 17-float feature vector, clean streak
+- [src/armband_ai/hailo.py](src/armband_ai/hailo.py) — Hailo HEF inference path
+- [src/armband_ai/inference_service.py](src/armband_ai/inference_service.py) — CPU/MLP/ONNX/Hailo priority
+- [src/armband_ai/logger.py](src/armband_ai/logger.py) — MQTT logger, iOS batch receiver + ACK
+- [src/armband_ai/models.py](src/armband_ai/models.py)
+- [src/armband_ai/quality.py](src/armband_ai/quality.py) — raw-window quality gates
+- [src/armband_ai/queries.py](src/armband_ai/queries.py) — read helpers, init_db
 
 **Dashboard**
 - [dashboard/app.py](dashboard/app.py) — Streamlit live dashboard
 
 **Docs**
-- [docs/PIPELINE.md](docs/PIPELINE.md)
-- [docs/LIBRE_FLOW.md](docs/LIBRE_FLOW.md)
-- [docs/HAILO_MODEL.md](docs/HAILO_MODEL.md)
-- [docs/HAILO_DRIVER.md](docs/HAILO_DRIVER.md)
-- [docs/LOG_ROTATION.md](docs/LOG_ROTATION.md)
-- [docs/GIT_AUTO_PULL.md](docs/GIT_AUTO_PULL.md)
 - [HARDWARE.md](HARDWARE.md)
+- [docs/GIT_AUTO_PULL.md](docs/GIT_AUTO_PULL.md)
+- [docs/HAILO_DRIVER.md](docs/HAILO_DRIVER.md)
+- [docs/HAILO_MODEL.md](docs/HAILO_MODEL.md)
+- [docs/LIBRE_FLOW.md](docs/LIBRE_FLOW.md)
+- [docs/LOG_ROTATION.md](docs/LOG_ROTATION.md)
+- [docs/PIPELINE.md](docs/PIPELINE.md)
 
 **Scripts**
 - [scripts/calibrate.py](scripts/calibrate.py)
-- [scripts/train_multifeature.py](scripts/train_multifeature.py)
-- [scripts/train_mlp_onnx.py](scripts/train_mlp_onnx.py)
-- [scripts/log_glucose.py](scripts/log_glucose.py)
 - [scripts/export_csv.py](scripts/export_csv.py)
 - [scripts/export_features.py](scripts/export_features.py)
-- [scripts/rotate_logs.sh](scripts/rotate_logs.sh)
 - [scripts/git_auto_pull.sh](scripts/git_auto_pull.sh)
-- [scripts/install_git_hooks.sh](scripts/install_git_hooks.sh)
 - [scripts/hailo_diagnose.py](scripts/hailo_diagnose.py)
 - [scripts/hailo_identify.py](scripts/hailo_identify.py)
-- [scripts/run_logger.py](scripts/run_logger.py)
-- [scripts/run_inference.py](scripts/run_inference.py)
+- [scripts/install_git_hooks.sh](scripts/install_git_hooks.sh)
+- [scripts/log_glucose.py](scripts/log_glucose.py)
+- [scripts/rotate_logs.sh](scripts/rotate_logs.sh)
 - [scripts/run_dashboard.sh](scripts/run_dashboard.sh)
+- [scripts/run_inference.py](scripts/run_inference.py)
+- [scripts/run_logger.py](scripts/run_logger.py)
 - [scripts/run_quality.py](scripts/run_quality.py)
+- [scripts/train_mlp_onnx.py](scripts/train_mlp_onnx.py)
+- [scripts/train_multifeature.py](scripts/train_multifeature.py)
+- [scripts/update_file_index.py](scripts/update_file_index.py)
 
 **Systemd units**
-- [systemd/armband-logger.service](systemd/armband-logger.service)
-- [systemd/armband-inference.service](systemd/armband-inference.service)
 - [systemd/armband-dashboard.service](systemd/armband-dashboard.service)
 - [systemd/armband-git-pull.service](systemd/armband-git-pull.service)
 - [systemd/armband-git-pull.timer](systemd/armband-git-pull.timer)
+- [systemd/armband-inference.service](systemd/armband-inference.service)
+- [systemd/armband-logger.service](systemd/armband-logger.service)
 
 **Config**
+- [.gitignore](.gitignore)
+- [LICENSE](LICENSE)
 - [config.example.yaml](config.example.yaml)
 - [requirements.txt](requirements.txt)
-- [LICENSE](LICENSE)
 
 ## License
 
