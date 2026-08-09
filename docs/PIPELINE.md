@@ -31,8 +31,20 @@ inference_results
 | Firmware | Publishes bpm, spo2, temp, motion, moving, raw940, filt940, batt, trans, conn_ms, boot |
 | `logger.py` | MQTT subscribe → `insert_reading` → `ppg_readings` |
 | `received_at` | UTC ISO timestamp **when the Pi received** the message |
+| iOS dump | QoS1 batches on `armband/ios/batch` with phone UUIDs as `source_id` + optional `session_id` |
 
-SpO₂ convention: firmware may send **&lt; 0** (typically `-1`) when invalid / not computed. Feature code ignores those values when averaging.
+SpO₂ convention: firmware may send **< 0** (typically `-1`) when invalid / not computed. Feature code ignores those values when averaging.
+
+#### Dual path (firmware live + phone dump)
+
+The Pi can store the **same physical sample twice**:
+
+1. **Pi-direct** — firmware publish on `armband/ppg`, inserted by the logger with no phone `source_id`. `received_at` is Pi receipt time (always-on).
+2. **Phone dump** — iOS batch on `armband/ios/batch`, each row has a phone-minted UUID as `source_id`. `source_id UNIQUE` only dedupes phone batches against themselves.
+
+**Calibration / feature windows:** prefer **Pi-direct** rows when both exist for a window. Pi timestamps are authoritative for time-based quality (still fraction, clean streaks). Phone rows are the offline/outage path and the dump path for offline-first UX — not a second primary clock.
+
+This is a documentation rule until `calibrate.py` / feature loaders encode a preference; do not invent merges without an explicit schema change.
 
 ### 2. Features
 
