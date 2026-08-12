@@ -42,6 +42,7 @@ class WindowFeatures:
     bpm_mean: float
     bpm_std: float
     spo2_mean: float              # ignores invalid (<0) values
+    # bpm_mean / bpm_std ignore non-positive (no-finger / not-yet) samples
     temp_mean: float
 
     # Motion
@@ -208,6 +209,14 @@ def extract_window_features(df: pd.DataFrame) -> Optional[WindowFeatures]:
     spo2_valid = spo2[spo2 >= 0]
     spo2_mean = float(spo2_valid.mean()) if len(spo2_valid) else 0.0
 
+    # BPM: ignore non-positive (firmware 0 / insert NULL for no-finger).
+    # Without this filter a loose band produces bpm_mean near 0 and the model
+    # treats it as signal.
+    bpm = pd.to_numeric(work.get("bpm", pd.Series(dtype=float)), errors="coerce")
+    bpm_valid = bpm[bpm > 0]
+    bpm_mean = float(bpm_valid.mean()) if len(bpm_valid) else 0.0
+    bpm_std = float(bpm_valid.std()) if len(bpm_valid) > 1 else 0.0
+
     moving = work.get("moving")
     if moving is not None:
         moving_num = pd.to_numeric(moving, errors="coerce").fillna(0).astype(int)
@@ -232,8 +241,8 @@ def extract_window_features(df: pd.DataFrame) -> Optional[WindowFeatures]:
         filt940_max=filt_max,
         filt940_slope=_linear_slope(work.get("filt940", pd.Series(dtype=float))),
         raw940_mean=_safe_mean(work.get("raw940", pd.Series(dtype=float))),
-        bpm_mean=_safe_mean(work.get("bpm", pd.Series(dtype=float))),
-        bpm_std=_safe_std(work.get("bpm", pd.Series(dtype=float))),
+        bpm_mean=bpm_mean,
+        bpm_std=bpm_std,
         spo2_mean=spo2_mean,
         temp_mean=_safe_mean(work.get("temp", pd.Series(dtype=float))),
         motion_mean=_safe_mean(work.get("motion", pd.Series(dtype=float))),
