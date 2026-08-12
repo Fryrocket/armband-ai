@@ -25,6 +25,9 @@ That meant the quality_score attached to a training row could describe a
 different candidate window than the one the feature vector was actually
 computed from. The re-filter below now mirrors prefer_still exactly, so the
 training features are consistent with the gate that admitted the pair.
+
+2026-08-12: pair floor raised from 8 to MIN_PAIRS_PER_SUBJECT (20).
+Per-subject partition and structural n≤p still missing on this path.
 """
 
 from __future__ import annotations
@@ -233,10 +236,23 @@ def main() -> int:
             print(f"ERROR: failed to load pairs: {e}", file=sys.stderr)
         return 2
 
-    if pairs is None or len(pairs) < 8:
+    # Floor: align with MIN_PAIRS_PER_SUBJECT used by the OLS path.
+    # A 17-input MLP with hidden=32 has far more free parameters than OLS;
+    # n=8 was never a defensible bar. There is still no structural n≤p or
+    # per-subject partition on this path — that remains an open gap.
+    try:
+        from armband_ai.models import MIN_PAIRS_PER_SUBJECT
+        min_pairs = MIN_PAIRS_PER_SUBJECT
+    except Exception:
+        min_pairs = 20
+
+    if pairs is None or len(pairs) < min_pairs:
         n = 0 if pairs is None else len(pairs)
         print(
-            f"ERROR: need >= 8 quality-gated pairs for a tiny MLP (got {n}).",
+            f"ERROR: need >= {min_pairs} quality-gated pairs for MLP/HEF training "
+            f"(got {n}). Same floor as OLS MIN_PAIRS_PER_SUBJECT. "
+            f"Note: this path still lacks per-subject partition and structural "
+            f"n≤p; do not treat a passing train as production-ready at pilot scale.",
             file=sys.stderr,
         )
         return 1
