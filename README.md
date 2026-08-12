@@ -3,7 +3,7 @@
 > **Part of [BGM](https://github.com/Fryrocket/BGM)** – the umbrella wearable blood-glucose monitoring project.  
 > Wearable firmware companion: **[armband-ppg-940nm](https://github.com/Fryrocket/armband-ppg-940nm)**.
 
-**v0.4.5** – Drift monitor (still-only filt940 median vs last-cal baseline) + insert-time soft validation for BPM/temp; quality score on raw window, consecutive-clean streak gates, tighter optical penalties, Hailo path, MLP→ONNX trainer, multi-feature OLS.
+**v0.5.0** – Subject_ID / per-subject fits, homogeneity gate, structural n ≤ p bar for multi-feature OLS (p=10), drift monitor, insert-time soft validation, consecutive-clean streak gates, Hailo path, MLP→ONNX trainer.
 
 | Doc | Purpose |
 |-----|---------|
