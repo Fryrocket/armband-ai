@@ -49,11 +49,11 @@ distinct non-null session_id values it is dropped and counted as
 dropped_mixed_session. This is the discontinuity the rule exists to catch
 (including re-seat straddles once re-seat = new session is in force).
 
---- HARD INVALIDATION (ASK 12, 2026-08-13) ---
+--- HARD INVALIDATION (ASK 12 / 16, 2026-08-13) ---
 score_window hard-fails (hard_invalid=True, score=0) when the window has
-zero valid bpm samples or zero valid spo2 samples. Those windows are
-counted as dropped_hard_invalid and never become pairs. The rate is
-diagnostic of band fit during S001.
+zero valid bpm samples, zero valid spo2 samples, or no motion data.
+Those windows are counted as dropped_hard_invalid and never become pairs.
+The rate is diagnostic of band fit during S001.
 """
 
 from __future__ import annotations
@@ -173,8 +173,8 @@ def build_calibration_pairs(
         values → drop as mixed_session)
       - Compute still_fraction, max_clean_streak, and quality_score on that
         *raw* window (before any filtering) via a single WindowFeatures pass
-      - Hard-invalid windows (no valid bpm or no valid spo2) are refused by
-        score_window and counted as dropped_hard_invalid (ASK 12)
+      - Hard-invalid windows (no valid bpm / spo2 / motion) are refused by
+        score_window and counted as dropped_hard_invalid (ASK 12 / 16)
       - Gate on min_still_fraction, min_clean_streak, and min_quality first —
         all three reflect the window as actually recorded
       - THEN, for aggregation only, prefer non-moving samples if prefer_still
@@ -267,7 +267,7 @@ def build_calibration_pairs(
             continue
 
         q = score_window(raw_feats)
-        # ASK 12: hard invalidation (no valid bpm / spo2) — refuse and count.
+        # ASK 12 / 16: hard invalidation (no valid bpm / spo2 / motion).
         if getattr(q, "hard_invalid", False):
             dropped_hard_invalid += 1
             continue
@@ -325,7 +325,7 @@ def build_calibration_pairs(
     ):
         log.info(
             "build_calibration_pairs: dropped %d (no session_id) + %d (mixed session) "
-            "+ %d (unmapped subject) + %d (hard invalid: no_valid_bpm/spo2)",
+            "+ %d (unmapped subject) + %d (hard invalid: no_valid_bpm/spo2/no_motion_data)",
             dropped_no_session,
             dropped_mixed_session,
             dropped_unmapped,

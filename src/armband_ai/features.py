@@ -4,18 +4,21 @@ These features are the bridge between the MQTT logger and any future model
 (CPU baseline or Hailo-8 HEF). Keep them deterministic and easy to export.
 
 The default 17-float vector order is frozen for Hailo MLP / HEF training.
-Extra diagnostic fields (max_clean_streak, clean_fraction) live on
-WindowFeatures but are not part of that vector unless callers request them.
+Extra diagnostic fields (max_clean_streak, clean_fraction, n_valid_bpm,
+n_valid_spo2, n_valid_motion) live on WindowFeatures but are not part of
+that vector unless callers request them.
 
 Sentinel policy (2026-08-12 / 13)
 ---------------------------------
 Firmware emits bpm=0 (or NULL) and spo2<0 when the finger/contact is absent.
 Feature extraction *filters* those sentinels so averages are not pulled to
 zero, but a fixed-width vector still needs a number in every slot. When a
-window has *no* valid bpm samples or *no* valid spo2 samples the invented
-0.0 is a lie. Only the quality gate can refuse the window (see quality.py
-ASK 12 hard invalidation). extract_window_features still returns the
-numbers for diagnostics; score_window hard-fails those cases.
+window has *no* valid bpm samples (bpm > 0) or *no* valid spo2 samples
+(spo2 > 0) the invented 0.0 is a lie. A missing `moving` column (or zero
+valid motion samples) inventing still_fraction=1.0 is the same lie.
+Only the quality gate can refuse the window (see quality.py hard
+invalidation). extract_window_features still returns the numbers for
+diagnostics; score_window hard-fails those cases.
 """
 
 from __future__ import annotations
@@ -51,10 +54,11 @@ class WindowFeatures:
     # PPG / vitals
     bpm_mean: float
     bpm_std: float
-    spo2_mean: float              # ignores invalid (<0) values
+    spo2_mean: float              # ignores invalid (<=0) values
     # bpm_mean / bpm_std ignore non-positive (no-finger / not-yet) samples
     n_valid_bpm: int              # count of bpm > 0 in the window (gate uses this)
-    n_valid_spo2: int             # count of spo2 >= 0 in the window (gate uses this)
+    n_valid_spo2: int             # count of spo2 > 0 in the window (gate uses this)
+    n_valid_motion: int           # count of non-null `moving` samples (gate uses this)
     temp_mean: float
 
     # Motion
@@ -201,8 +205,9 @@ def extract_window_features(df: pd.DataFrame) -> Optional[WindowFeatures]:
     """Build WindowFeatures from a DataFrame of PPG rows (oldest → newest).
 
     Always returns numbers (including 0.0 for empty valid sets). Callers that
-    need to *refuse* a window with no valid bpm or spo2 must use the quality
-    gate (score_window / score_dataframe), which hard-fails those cases.
+    need to *refuse* a window with no valid bpm, spo2, or motion data must
+    use the quality gate (score_window / score_dataframe), which hard-fails
+    those cases.
     """
     if df is None or df.empty:
         return None
@@ -224,9 +229,11 @@ def extract_window_features(df: pd.DataFrame) -> Optional[WindowFeatures]:
 
     filt_min, filt_max = _safe_minmax(work.get("filt940", pd.Series(dtype=float)))
 
-    # SpO2: ignore invalid (< 0) from firmware
+    # SpO2: ignore invalid (<= 0). Firmware sentinel is -1; 0% is not a
+    # measurement (symmetric with bpm > 0). When n_valid_spo2 == 0 the
+    # gate must refuse the window.
     spo2 = pd.to_numeric(work.get("spo2", pd.Series(dtype=float)), errors="coerce")
-    spo2_valid = spo2[spo2 >= 0]
+    spo2_valid = spo2[spo2 > 0]
     n_valid_spo2 = int(len(spo2_valid))
     spo2_mean = float(spo2_valid.mean()) if n_valid_spo2 else 0.0
 
@@ -241,14 +248,19 @@ def extract_window_features(df: pd.DataFrame) -> Optional[WindowFeatures]:
     # on other grounds, but a one-sample "perfectly steady" pulse is weak).
     bpm_std = float(bpm_valid.std(ddof=1)) if n_valid_bpm > 1 else 0.0
 
-    moving = work.get("moving")
-    if moving is not None:
-        moving_num = pd.to_numeric(moving, errors="coerce").fillna(0).astype(int)
+    # Motion: missing column (or zero valid samples) is NOT still_fraction=1.0.
+    # A dead/unconfigured LIS3DH must hard-fail at the gate (no_motion_data).
+    # Per-sample NaN → MOVING (fillna(1)), matching _clean_streak_metrics.
+    if "moving" in work.columns:
+        moving_raw = pd.to_numeric(work["moving"], errors="coerce")
+        n_valid_motion = int(moving_raw.notna().sum())
+        moving_num = moving_raw.fillna(1).astype(int)
         still_fraction = float((moving_num == 0).mean())
         transitions = int((moving_num.diff().abs() == 1).sum())
     else:
-        moving_num = pd.Series(np.zeros(n, dtype=int))
-        still_fraction = 1.0
+        n_valid_motion = 0
+        moving_num = pd.Series(np.ones(n, dtype=int))
+        still_fraction = 0.0
         transitions = 0
 
     filt_series = work.get("filt940", pd.Series(np.zeros(n, dtype=float)))
@@ -270,6 +282,7 @@ def extract_window_features(df: pd.DataFrame) -> Optional[WindowFeatures]:
         spo2_mean=spo2_mean,
         n_valid_bpm=n_valid_bpm,
         n_valid_spo2=n_valid_spo2,
+        n_valid_motion=n_valid_motion,
         temp_mean=_safe_mean(work.get("temp", pd.Series(dtype=float))),
         motion_mean=_safe_mean(work.get("motion", pd.Series(dtype=float))),
         motion_max=float(
