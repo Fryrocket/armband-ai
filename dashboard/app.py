@@ -511,7 +511,12 @@ def render_calibration(db_path: str) -> None:
     m3.metric("RMSE", f"{model.rmse:.1f} mg/dL")
     m4.metric("Pairs", f"{model.n_pairs}")
 
-    st.caption(f"glucose ≈ {model.slope:.6f} × filt940 + {model.intercept:.2f}")
+    if getattr(model, "grade", "") == "pilot" or getattr(model, "note", ""):
+        st.warning(model.note or "PILOT-GRADE fit. Do not treat R² as evidence.")
+    st.caption(
+        f"glucose ≈ {model.slope:.6f} × filt940 + {model.intercept:.2f}"
+        + (f"  ·  grade={model.grade}" if getattr(model, "grade", None) else "")
+    )
 
     fig = go.Figure()
     fig.add_trace(

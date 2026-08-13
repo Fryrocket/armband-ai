@@ -48,9 +48,10 @@ def main() -> int:
         help="Directory for model JSON artifacts (default models/)",
     )
     parser.add_argument(
-        "--baseline-only",
-        action="store_true",
-        help="Fit only the single-feature baseline models",
+        "--export-pairs",
+        type=str,
+        default=None,
+        help="Write pairs CSV + sibling .drops.json (ASK 24)",
     )
     args = parser.parse_args()
 
@@ -63,6 +64,8 @@ def main() -> int:
             build_calibration_pairs,
             fit_baseline,
             load_subject_map_from_csv,
+            read_pairs,
+            write_pairs,
         )
         from armband_ai.config import ROOT as PROJECT_ROOT
         from armband_ai.config import load_config
@@ -113,9 +116,7 @@ def main() -> int:
                 subject_map=subject_map,
             )
         else:
-            import pandas as pd
-
-            pairs = pd.read_csv(args.pairs)
+            pairs = read_pairs(args.pairs)
             if subject_map is not None and "session_id" in pairs.columns:
                 pairs = pairs.copy()
                 pairs["subject_id"] = pairs["session_id"].map(subject_map)
@@ -136,8 +137,16 @@ def main() -> int:
         return 1
 
     print(f"Pairs: {len(pairs)}")
+    drops = getattr(pairs, "attrs", {}).get("drop_counts") or {}
+    if drops:
+        print("Drop counts:", drops)
     if "subject_id" in pairs.columns:
         print(pairs.groupby("subject_id", dropna=False).size().to_string())
+
+    if args.export_pairs:
+        sidecar = write_pairs(pairs, args.export_pairs)
+        print(f"Pairs CSV → {args.export_pairs}")
+        print(f"Drops JSON → {sidecar}")
 
     out_dir = Path(args.out) if args.out else (PROJECT_ROOT / "models")
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -53,18 +53,22 @@ dropped_mixed_session. This is the discontinuity the rule exists to catch
 score_window hard-fails (hard_invalid=True, score=0) when the window has
 zero valid bpm samples, zero valid spo2 samples, or no motion data.
 Those windows are counted as dropped_hard_invalid and never become pairs.
-The rate is diagnostic of band fit during S001. Drop counts are attached
-to the returned DataFrame as .attrs["drop_counts"] (ASK 23) as well as
-logged.
+The rate is diagnostic of band fit during S001. Drop counts live on
+the returned DataFrame as .attrs["drop_counts"] (in-process) AND as a
+sibling JSON written by write_pairs() (ASK 24). .attrs alone does not
+survive CSV.
 
 --- FIT_BASELINE (ASK 20 / 21, 2026-08-13) ---
 fit_baseline is the only inference path that will execute at S001
 (Hailo disabled, multi-feature n<=p gated). It therefore:
   - REFUSES a pairs frame with >1 distinct non-null subject_id
     (ValueError, structural — locked decision 3). No "take the first."
-  - REFUSES n < MIN_BASELINE_PAIRS (proposed 10) and glucose range
-    < MIN_GLUCOSE_RANGE_MGDL (proposed 40). n=2 interpolates; a 20 mg/dL
-    cluster teaches nothing about excursions. Numbers are PROPOSED.
+  - REFUSES n < MIN_BASELINE_PAIRS (10). p=2; 5×p=10; 8 residual DoF.
+  - REFUSES glucose range < 40 mg/dL AND occupancy of fewer than 3
+    equal-width terciles of [min, max]. Range alone is gameable by
+    two clusters. Distribution is required.
+  Fits with n < PILOT_GRADE_BELOW_PAIRS (30) are marked grade="pilot"
+  in the artifact. Plumbing, not evidence.
 
 """
 
@@ -87,17 +91,25 @@ from .queries import load_libre
 
 log = logging.getLogger("armband_ai.calibration")
 
-# ASK 21 — PROPOSED floors. Not locked. Argue these.
+# ASK 21 — LOCKED 2026-08-13 (amended).
 # p = 2 (slope + intercept). n = 2 interpolates: R² = 1, MAE = 0.
-# 5×p = 10 is the multiple sketched as placeholder on the (now disabled)
-# MLP path. Above interpolation, below MIN_PAIRS_PER_SUBJECT=20 used by
-# 10-feature OLS. S001 will likely fail this; that is the point.
+# 5×p = 10 leaves 8 residual degrees of freedom. That is the justification.
 MIN_BASELINE_PAIRS = 10
-# Libre noise is ~15–20 mg/dL. Claude named a 20 mg/dL cluster as the
-# failure mode. 40 mg/dL is twice that — one modest glycemic swing,
-# not a tight band of the same point measured ten times.
+# Libre noise ~15–20 mg/dL. 40 mg/dL span ≈ 1.9 SNR on the slope.
+# Achievable on purpose (eat a meal). Range alone is not enough.
 MIN_GLUCOSE_RANGE_MGDL = 40.0
+# Equal-width terciles of [min, max]; all three must be occupied.
+# Two clusters 40 mg/dL apart occupy only the end bins — refuse.
+MIN_GLUCOSE_TERCILES = 3
+# n below this is a plumbing artifact, not evidence about the premise.
+PILOT_GRADE_BELOW_PAIRS = 30
 
+DROP_COUNT_KEYS = (
+    "dropped_no_session",
+    "dropped_mixed_session",
+    "dropped_unmapped",
+    "dropped_hard_invalid",
+)
 
 @dataclass
 class BaselineModel:
@@ -115,6 +127,8 @@ class BaselineModel:
     min_still_fraction: float = 0.0
     min_clean_streak: int = 0
     subject_id: str | None = None
+    grade: str = "pilot"  # "pilot" if n < 30; else "provisional"
+    note: str = ""
 
     def predict(self, filt940: float | np.ndarray) -> float | np.ndarray:
         return self.slope * filt940 + self.intercept
@@ -145,7 +159,83 @@ class BaselineModel:
             min_still_fraction=float(d.get("min_still_fraction", 0.0)),
             min_clean_streak=int(d.get("min_clean_streak", 0)),
             subject_id=d.get("subject_id"),
+            grade=str(d.get("grade", "pilot")),
+            note=str(d.get("note", "")),
         )
+
+
+def _empty_drop_counts() -> dict[str, int]:
+    return {k: 0 for k in DROP_COUNT_KEYS}
+
+
+def pairs_drops_path(pairs_path: str | Path) -> Path:
+    """Sibling JSON: exports/pairs.csv → exports/pairs.csv.drops.json."""
+    p = Path(pairs_path)
+    return p.with_name(p.name + ".drops.json")
+
+
+def write_pairs(df: pd.DataFrame, path: str | Path) -> Path:
+    """Write pairs CSV plus a drop-count sidecar that survives serialisation.
+
+    ASK 24: pandas .attrs die on to_csv. The sidecar is the durable copy.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+    drops = dict(df.attrs.get("drop_counts") or _empty_drop_counts())
+    sidecar = pairs_drops_path(path)
+    payload = {
+        "pairs_file": path.name,
+        "n_pairs": int(len(df)),
+        "drop_counts": drops,
+    }
+    sidecar.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return sidecar
+
+
+def read_pairs(path: str | Path) -> pd.DataFrame:
+    """Read a pairs CSV and restore drop_counts from the sibling JSON if present."""
+    path = Path(path)
+    df = pd.read_csv(path)
+    sidecar = pairs_drops_path(path)
+    if sidecar.exists():
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        df.attrs["drop_counts"] = payload.get("drop_counts", _empty_drop_counts())
+    return df
+
+
+def _tercile_occupancy(y: np.ndarray) -> int:
+    """How many equal-width terciles of [min, max] contain at least one point."""
+    if y.size == 0:
+        return 0
+    lo = float(np.min(y))
+    hi = float(np.max(y))
+    span = hi - lo
+    if span <= 0:
+        return 1
+    edges = (lo, lo + span / 3.0, lo + 2.0 * span / 3.0, hi)
+    occupied = 0
+    for i in range(3):
+        if i < 2:
+            hit = np.any((y >= edges[i]) & (y < edges[i + 1]))
+        else:
+            hit = np.any((y >= edges[i]) & (y <= edges[i + 1]))
+        if hit:
+            occupied += 1
+    return occupied
+
+
+def _baseline_grade(n_pairs: int) -> tuple[str, str]:
+    if n_pairs < PILOT_GRADE_BELOW_PAIRS:
+        return (
+            "pilot",
+            "PILOT-GRADE. n<30. This fit tests plumbing and workflow, "
+            "not whether 940nm tracks glucose. Do not treat R² as evidence.",
+        )
+    return (
+        "provisional",
+        "n>=30. Still not a claim that 940nm tracks glucose.",
+    )
 
 
 def load_subject_map_from_csv(path: str | Path) -> dict[str, str]:
@@ -219,12 +309,7 @@ def build_calibration_pairs(
     """
     init_db(db_path)
     libre = load_libre(db_path)
-    empty_counts = {
-        "dropped_no_session": 0,
-        "dropped_mixed_session": 0,
-        "dropped_unmapped": 0,
-        "dropped_hard_invalid": 0,
-    }
+    empty_counts = _empty_drop_counts()
     if libre.empty:
         out = pd.DataFrame()
         out.attrs["drop_counts"] = dict(empty_counts)
@@ -395,14 +480,16 @@ def fit_baseline(
 
     Refuses (ValueError), does not warn:
       - more than one distinct non-null subject_id (ASK 20, structural)
-      - n < MIN_BASELINE_PAIRS (ASK 21, proposed)
-      - glucose range < MIN_GLUCOSE_RANGE_MGDL (ASK 21, proposed)
+      - n < MIN_BASELINE_PAIRS (ASK 21)
+      - glucose range < MIN_GLUCOSE_RANGE_MGDL (ASK 21)
+      - fewer than MIN_GLUCOSE_TERCILES occupied terciles of [min, max] (ASK 21)
+    Fits with n < 30 are grade="pilot" in the saved artifact.
     """
     n = 0 if pairs is None else len(pairs)
     if pairs is None or n < MIN_BASELINE_PAIRS:
         raise ValueError(
             f"fit_baseline: need >= {MIN_BASELINE_PAIRS} pairs "
-            f"(p=2; n=2 interpolates; proposed 5×p={MIN_BASELINE_PAIRS}; got {n})"
+            f"(p=2; 5×p={MIN_BASELINE_PAIRS}; 8 residual DoF; n=2 interpolates; got {n})"
         )
 
     # ASK 20: mixed subjects are a structural error, not a label to pick.
@@ -429,8 +516,15 @@ def fit_baseline(
     if g_range < MIN_GLUCOSE_RANGE_MGDL:
         raise ValueError(
             f"fit_baseline: glucose range {g_range:.1f} mg/dL < "
-            f"{MIN_GLUCOSE_RANGE_MGDL:.0f} (proposed). "
+            f"{MIN_GLUCOSE_RANGE_MGDL:.0f}. "
             "A tight band teaches nothing about excursions."
+        )
+    n_terciles = _tercile_occupancy(y)
+    if n_terciles < MIN_GLUCOSE_TERCILES:
+        raise ValueError(
+            f"fit_baseline: glucose occupies {n_terciles}/3 terciles of "
+            f"[{float(np.min(y)):.0f}, {float(np.max(y)):.0f}]. "
+            "Need all three (range plus distribution; two clusters fail)."
         )
 
     slope, intercept = np.polyfit(x, y, 1)
@@ -441,6 +535,8 @@ def fit_baseline(
     r2 = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
     mae = float(np.mean(np.abs(y - y_hat)))
     rmse = float(np.sqrt(np.mean((y - y_hat) ** 2)))
+
+    grade, note = _baseline_grade(n)
 
     return BaselineModel(
         slope=float(slope),
@@ -455,4 +551,6 @@ def fit_baseline(
         min_still_fraction=float(min_still_fraction),
         min_clean_streak=int(min_clean_streak),
         subject_id=subject_id,
+        grade=grade,
+        note=note,
     )
