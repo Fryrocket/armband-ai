@@ -467,6 +467,12 @@ def render_calibration(db_path: str) -> None:
     )
 
     st.subheader(f"Calibration pairs kept ({len(pairs)})")
+    drop_counts = getattr(pairs, "attrs", {}).get("drop_counts") or {}
+    if drop_counts:
+        st.caption(
+            "Dropped: "
+            + ", ".join(f"{k.replace('dropped_', '')}={v}" for k, v in drop_counts.items())
+        )
 
     if pairs.empty:
         st.info(
@@ -483,13 +489,17 @@ def render_calibration(db_path: str) -> None:
     ]
     st.dataframe(pairs[cols], use_container_width=True, hide_index=True)
 
-    model = fit_baseline(
-        pairs,
-        window_seconds=window,
-        prefer_still=prefer_still,
-        min_quality=float(min_quality),
-        min_still_fraction=float(min_still),
-    )
+    try:
+        model = fit_baseline(
+            pairs,
+            window_seconds=window,
+            prefer_still=prefer_still,
+            min_quality=float(min_quality),
+            min_still_fraction=float(min_still),
+        )
+    except ValueError as e:
+        st.warning(str(e))
+        return
 
     if model is None:
         st.warning("Need at least 2 pairs to fit a baseline model.")

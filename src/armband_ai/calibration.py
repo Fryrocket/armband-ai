@@ -53,7 +53,19 @@ dropped_mixed_session. This is the discontinuity the rule exists to catch
 score_window hard-fails (hard_invalid=True, score=0) when the window has
 zero valid bpm samples, zero valid spo2 samples, or no motion data.
 Those windows are counted as dropped_hard_invalid and never become pairs.
-The rate is diagnostic of band fit during S001.
+The rate is diagnostic of band fit during S001. Drop counts are attached
+to the returned DataFrame as .attrs["drop_counts"] (ASK 23) as well as
+logged.
+
+--- FIT_BASELINE (ASK 20 / 21, 2026-08-13) ---
+fit_baseline is the only inference path that will execute at S001
+(Hailo disabled, multi-feature n<=p gated). It therefore:
+  - REFUSES a pairs frame with >1 distinct non-null subject_id
+    (ValueError, structural — locked decision 3). No "take the first."
+  - REFUSES n < MIN_BASELINE_PAIRS (proposed 10) and glucose range
+    < MIN_GLUCOSE_RANGE_MGDL (proposed 40). n=2 interpolates; a 20 mg/dL
+    cluster teaches nothing about excursions. Numbers are PROPOSED.
+
 """
 
 from __future__ import annotations
@@ -74,6 +86,17 @@ from .quality import score_window
 from .queries import load_libre
 
 log = logging.getLogger("armband_ai.calibration")
+
+# ASK 21 — PROPOSED floors. Not locked. Argue these.
+# p = 2 (slope + intercept). n = 2 interpolates: R² = 1, MAE = 0.
+# 5×p = 10 is the multiple sketched as placeholder on the (now disabled)
+# MLP path. Above interpolation, below MIN_PAIRS_PER_SUBJECT=20 used by
+# 10-feature OLS. S001 will likely fail this; that is the point.
+MIN_BASELINE_PAIRS = 10
+# Libre noise is ~15–20 mg/dL. Claude named a 20 mg/dL cluster as the
+# failure mode. 40 mg/dL is twice that — one modest glycemic swing,
+# not a tight band of the same point measured ten times.
+MIN_GLUCOSE_RANGE_MGDL = 40.0
 
 
 @dataclass
@@ -196,8 +219,16 @@ def build_calibration_pairs(
     """
     init_db(db_path)
     libre = load_libre(db_path)
+    empty_counts = {
+        "dropped_no_session": 0,
+        "dropped_mixed_session": 0,
+        "dropped_unmapped": 0,
+        "dropped_hard_invalid": 0,
+    }
     if libre.empty:
-        return pd.DataFrame()
+        out = pd.DataFrame()
+        out.attrs["drop_counts"] = dict(empty_counts)
+        return out
 
     with get_connection(db_path) as conn:
         ppg = pd.read_sql_query(
@@ -207,7 +238,9 @@ def build_calibration_pairs(
         )
 
     if ppg.empty:
-        return pd.DataFrame()
+        out = pd.DataFrame()
+        out.attrs["drop_counts"] = dict(empty_counts)
+        return out
 
     ppg["received_at"] = pd.to_datetime(ppg["received_at"], utc=True)
 
@@ -289,6 +322,17 @@ def build_calibration_pairs(
         median_t = agg["received_at"].median()
         offset_s = (median_t - t).total_seconds()
 
+        # Provenance of this row (ASK 22) — two sample sets, one pair:
+        #   From `agg` (prefer-still filtered, when any still sample exists):
+        #     filt940_mean, filt940_std, raw940_mean, motion_mean, n_samples.
+        #     These are the optical/motion means that become baseline X.
+        #   From `raw_feats` (unfiltered window — the same object the gate
+        #     scored): filt940_slope, bpm_mean, bpm_std, temp_mean,
+        #     moving_transitions, still_fraction, max_clean_streak,
+        #     clean_fraction.
+        # Deliberate: baseline X is the still-preferred optical mean;
+        # the extras describe the window the gate actually judged. They
+        # are not the same samples. Do not "fix" this by scoring agg.
         pairs.append(
             {
                 "libre_id": int(row["id"]),
@@ -317,12 +361,13 @@ def build_calibration_pairs(
             }
         )
 
-    if (
-        dropped_no_session
-        or dropped_mixed_session
-        or dropped_unmapped
-        or dropped_hard_invalid
-    ):
+    drop_counts = {
+        "dropped_no_session": dropped_no_session,
+        "dropped_mixed_session": dropped_mixed_session,
+        "dropped_unmapped": dropped_unmapped,
+        "dropped_hard_invalid": dropped_hard_invalid,
+    }
+    if any(drop_counts.values()):
         log.info(
             "build_calibration_pairs: dropped %d (no session_id) + %d (mixed session) "
             "+ %d (unmapped subject) + %d (hard invalid: no_valid_bpm/spo2/no_motion_data)",
@@ -332,10 +377,10 @@ def build_calibration_pairs(
             dropped_hard_invalid,
         )
 
-    if not pairs:
-        return pd.DataFrame()
-
-    return pd.DataFrame(pairs)
+    out = pd.DataFrame(pairs) if pairs else pd.DataFrame()
+    # ASK 23: diagnostic must survive past the log line.
+    out.attrs["drop_counts"] = drop_counts
+    return out
 
 
 def fit_baseline(
@@ -346,12 +391,47 @@ def fit_baseline(
     min_still_fraction: float = 0.0,
     min_clean_streak: int = 0,
 ) -> Optional[BaselineModel]:
-    """Fit glucose = slope * filt940 + intercept using ordinary least squares."""
-    if pairs is None or len(pairs) < 2:
-        return None
+    """Fit glucose = slope * filt940 + intercept using ordinary least squares.
+
+    Refuses (ValueError), does not warn:
+      - more than one distinct non-null subject_id (ASK 20, structural)
+      - n < MIN_BASELINE_PAIRS (ASK 21, proposed)
+      - glucose range < MIN_GLUCOSE_RANGE_MGDL (ASK 21, proposed)
+    """
+    n = 0 if pairs is None else len(pairs)
+    if pairs is None or n < MIN_BASELINE_PAIRS:
+        raise ValueError(
+            f"fit_baseline: need >= {MIN_BASELINE_PAIRS} pairs "
+            f"(p=2; n=2 interpolates; proposed 5×p={MIN_BASELINE_PAIRS}; got {n})"
+        )
+
+    # ASK 20: mixed subjects are a structural error, not a label to pick.
+    subject_id = None
+    if "subject_id" in pairs.columns:
+        raw = pairs["subject_id"].dropna().astype(str)
+        raw = raw[~raw.str.lower().isin(("none", "nan", ""))]
+        subjects = sorted(raw.unique().tolist())
+        if len(subjects) > 1:
+            raise ValueError(
+                f"fit_baseline: mixed subjects {subjects} — "
+                "cross-subject pool is a structural error (locked decision 3). "
+                "Partition first (fit_baseline_per_subject)."
+            )
+        if len(subjects) == 1:
+            subject_id = subjects[0]
 
     x = pairs["filt940_mean"].to_numpy(dtype=float)
     y = pairs["glucose_mgdl"].to_numpy(dtype=float)
+    if not np.isfinite(x).all() or not np.isfinite(y).all():
+        raise ValueError("fit_baseline: non-finite filt940_mean or glucose_mgdl")
+
+    g_range = float(np.max(y) - np.min(y))
+    if g_range < MIN_GLUCOSE_RANGE_MGDL:
+        raise ValueError(
+            f"fit_baseline: glucose range {g_range:.1f} mg/dL < "
+            f"{MIN_GLUCOSE_RANGE_MGDL:.0f} (proposed). "
+            "A tight band teaches nothing about excursions."
+        )
 
     slope, intercept = np.polyfit(x, y, 1)
     y_hat = slope * x + intercept
@@ -362,18 +442,13 @@ def fit_baseline(
     mae = float(np.mean(np.abs(y - y_hat)))
     rmse = float(np.sqrt(np.mean((y - y_hat) ** 2)))
 
-    subject_id = None
-    if "subject_id" in pairs.columns and pairs["subject_id"].notna().any():
-        # Homogeneous subject expected; take the first non-null
-        subject_id = str(pairs["subject_id"].dropna().iloc[0])
-
     return BaselineModel(
         slope=float(slope),
         intercept=float(intercept),
         r2=float(r2),
         mae=mae,
         rmse=rmse,
-        n_pairs=len(pairs),
+        n_pairs=n,
         window_seconds=window_seconds,
         prefer_still=prefer_still,
         min_quality=float(min_quality),

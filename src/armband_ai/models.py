@@ -283,15 +283,18 @@ def fit_baseline_per_subject(
                 min_pairs,
             )
             continue
-        m = fit_baseline(
-            group,
-            window_seconds=window_seconds,
-            prefer_still=prefer_still,
-            min_quality=min_quality,
-            min_still_fraction=min_still_fraction,
-            min_clean_streak=min_clean_streak,
-        )
-        if m is not None:
-            m.subject_id = sid
-            models.append(m)
+        try:
+            m = fit_baseline(
+                group,
+                window_seconds=window_seconds,
+                prefer_still=prefer_still,
+                min_quality=min_quality,
+                min_still_fraction=min_still_fraction,
+                min_clean_streak=min_clean_streak,
+            )
+        except ValueError as e:
+            log.info("fit_baseline_per_subject: refuse subject %s — %s", sid, e)
+            continue
+        m.subject_id = sid
+        models.append(m)
     return models
