@@ -48,6 +48,12 @@ Session attribution uses homogeneity, not mode(). If a window contains >1
 distinct non-null session_id values it is dropped and counted as
 dropped_mixed_session. This is the discontinuity the rule exists to catch
 (including re-seat straddles once re-seat = new session is in force).
+
+--- HARD INVALIDATION (ASK 12, 2026-08-13) ---
+score_window hard-fails (hard_invalid=True, score=0) when the window has
+zero valid bpm samples or zero valid spo2 samples. Those windows are
+counted as dropped_hard_invalid and never become pairs. The rate is
+diagnostic of band fit during S001.
 """
 
 from __future__ import annotations
@@ -167,6 +173,8 @@ def build_calibration_pairs(
         values → drop as mixed_session)
       - Compute still_fraction, max_clean_streak, and quality_score on that
         *raw* window (before any filtering) via a single WindowFeatures pass
+      - Hard-invalid windows (no valid bpm or no valid spo2) are refused by
+        score_window and counted as dropped_hard_invalid (ASK 12)
       - Gate on min_still_fraction, min_clean_streak, and min_quality first —
         all three reflect the window as actually recorded
       - THEN, for aggregation only, prefer non-moving samples if prefer_still
@@ -207,6 +215,7 @@ def build_calibration_pairs(
     dropped_no_session = 0
     dropped_mixed_session = 0
     dropped_unmapped = 0
+    dropped_hard_invalid = 0
     half = timedelta(seconds=window_seconds)
 
     for _, row in libre.iterrows():
@@ -258,6 +267,11 @@ def build_calibration_pairs(
             continue
 
         q = score_window(raw_feats)
+        # ASK 12: hard invalidation (no valid bpm / spo2) — refuse and count.
+        if getattr(q, "hard_invalid", False):
+            dropped_hard_invalid += 1
+            continue
+
         quality_score = float(q.score)
         quality_label = q.label
         if quality_score < min_quality:
@@ -303,13 +317,19 @@ def build_calibration_pairs(
             }
         )
 
-    if dropped_no_session or dropped_mixed_session or dropped_unmapped:
+    if (
+        dropped_no_session
+        or dropped_mixed_session
+        or dropped_unmapped
+        or dropped_hard_invalid
+    ):
         log.info(
             "build_calibration_pairs: dropped %d (no session_id) + %d (mixed session) "
-            "+ %d (unmapped subject)",
+            "+ %d (unmapped subject) + %d (hard invalid: no_valid_bpm/spo2)",
             dropped_no_session,
             dropped_mixed_session,
             dropped_unmapped,
+            dropped_hard_invalid,
         )
 
     if not pairs:

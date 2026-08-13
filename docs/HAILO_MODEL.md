@@ -1,5 +1,15 @@
 # Hailo-8 model path (train → ONNX → HEF → Pi)
 
+> **DISABLED AT PILOT SCALE (2026-08-13, ASK 10)**
+>
+> Default 17→32→16→1 MLP has **1121 free parameters**. Defensible training needs
+> thousands of pairs **per subject** (n ≫ p). The two-person pilot will not reach
+> four-figure per-subject counts this year. `scripts/train_mlp_onnx.py` exits
+> immediately with an explicit reason string. Path remains in tree for the day
+> data volume justifies it. When re-enabled, any floor must be **derived** from
+> actual layer widths at train time (`--hidden` is CLI); do not hardcode
+> `MIN_PAIRS` in that script.
+
 How to take armband `WindowFeatures` from CPU models to a compiled **HEF** on the Raspberry Pi AI HAT+ (Hailo-8 / 26 TOPS).
 
 Companion docs:
@@ -59,7 +69,7 @@ Do not reorder without re-exporting ONNX and recompiling the HEF.
 
 ---
 
-## End-to-end flow
+## End-to-end flow (when path is re-enabled)
 
 ```text
 Pi: quality-gated Libre pairs in SQLite
@@ -94,7 +104,7 @@ python scripts/log_glucose.py 142 --notes "still"
 python scripts/calibrate.py --min-quality 60 --min-still 0.7 --export-pairs exports/pairs.csv
 ```
 
-Aim for **≥ 30–50** quality-gated pairs before an MLP is meaningful. More is better.
+Aim for **thousands of quality-gated pairs per subject** before an MLP is meaningful. The arithmetic (1121 params at default hidden) makes pilot-scale training indefensible.
 
 Export full feature rows (optional helper):
 
@@ -108,7 +118,7 @@ For supervised training you need **paired** glucose labels (`build_calibration_p
 
 ## 2. Train MLP + export ONNX
 
-On a machine with PyTorch (Pi CPU is fine for a tiny net; x86 is faster):
+**Currently refuses.** When the disable is lifted:
 
 ```bash
 cd ~/armband-ai && source .venv/bin/activate
@@ -128,7 +138,7 @@ Or train directly from the live DB (same gates as calibrate):
 python scripts/train_mlp_onnx.py --from-db --min-quality 60 --min-still 0.7
 ```
 
-Outputs:
+Outputs (when active):
 
 | File | Purpose |
 |------|---------|
@@ -235,7 +245,8 @@ Input must be **float32**, batch dimension added inside `infer()` when needed. O
 
 - [ ] `hailortcli fw-control identify` → `Device Architecture: HAILO8`
 - [ ] `python scripts/hailo_diagnose.py` → HEALTHY
-- [ ] ≥ 30 quality-gated Libre pairs
+- [ ] Thousands of quality-gated Libre pairs **per subject** (pilot: not yet)
+- [ ] Disable lifted in `train_mlp_onnx.py` + derived floor in place
 - [ ] `train_mlp_onnx.py` produced ONNX + norm JSON
 - [ ] DFC compiled with **`hailo8`**
 - [ ] `hailortcli parse-hef` looks sane on the Pi
@@ -249,6 +260,7 @@ Input must be **float32**, batch dimension added inside `infer()` when needed. O
 
 | Symptom | Fix |
 |---------|-----|
+| `train_mlp_onnx.py` exits with DISABLED | Expected at pilot scale — see banner above |
 | `HailoRunner` not ready | Driver/bindings: see [HAILO_DRIVER.md](HAILO_DRIVER.md) |
 | HEF load fails | Wrong arch (8 vs 8L), DFC/HailoRT version skew, corrupt file |
 | Nonsense glucose | Norm mean/std mismatch; feature key order changed; bad calibration set |
@@ -261,7 +273,7 @@ Input must be **float32**, batch dimension added inside `infer()` when needed. O
 
 | Script | Role |
 |--------|------|
-| `scripts/train_mlp_onnx.py` | Train tiny MLP from pairs/DB → ONNX + norm JSON |
+| `scripts/train_mlp_onnx.py` | Train tiny MLP from pairs/DB → ONNX + norm JSON (**DISABLED**) |
 | `scripts/hailo_identify.py` | Device identity JSON |
 | `scripts/hailo_diagnose.py` | Driver / runtime health |
 | `scripts/run_inference.py` | Live loop (Hailo → CPU fallback) |
