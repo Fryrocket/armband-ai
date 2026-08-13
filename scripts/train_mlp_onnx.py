@@ -2,32 +2,31 @@
 
 """Train a small MLP on quality-gated calibration pairs and export ONNX + norm JSON.
 
+*** DISABLED AT PILOT SCALE (2026-08-13, ASK 10) ***
+
+Default architecture (17 → --hidden → max(2,hidden//2) → 1) has
+  (17*h + h) + (h*(h//2) + h//2) + ((h//2)*1 + 1) free parameters.
+At the default --hidden=32 that is exactly 1121 parameters.
+
+One pair per parameter is already the n = p condition (perfect in-sample
+fit on noise). A defensible multiple puts the requirement in the thousands
+of pairs *per subject*. The two-person pilot will not reach four-figure
+per-subject pair counts this year.
+
+Correct state for this path is DISABLED, not gated. The script exits with
+an explicit reason and does not train. Code remains in tree for the day
+data volume justifies it. When that day comes, any floor must be DERIVED
+from the actual layer widths at train time (--hidden is a CLI argument);
+MIN_PAIRS_PER_SUBJECT must not exist as a hardcoded constant in this file.
+
 Feature order matches WindowFeatures.to_vector() default keys (17 floats).
 
-Usage:
-    python scripts/train_mlp_onnx.py --from-db --min-quality 60 --min-still 0.7 --min-clean-streak 10
-    python scripts/train_mlp_onnx.py --pairs exports/pairs.csv --epochs 400
-    python scripts/train_mlp_onnx.py --from-db --out-onnx models/glucose_mlp.onnx
+Usage (will refuse until the disable is lifted):
+    python scripts/train_mlp_onnx.py --from-db --min-quality 60 ...
 
 Requires: torch, onnx (and project deps for --from-db).
 
-Exit codes: 0 ok · 1 usage/data · 2 dependency/DB/IO failure
-
---- FIX APPLIED ---
---from-db previously called build_calibration_pairs() without min_clean_streak,
-so MLP training pairs silently skipped that gate even when calibrate.py and
-train_multifeature.py enforced it (added it back below, default from config).
-
-_pairs_from_db() also re-pulled raw ppg rows per pair and re-filtered
-stillness with its own ad-hoc rule (">=4 still samples") that didn't match
-build_calibration_pairs' prefer_still logic (any still sample => filter).
-That meant the quality_score attached to a training row could describe a
-different candidate window than the one the feature vector was actually
-computed from. The re-filter below now mirrors prefer_still exactly, so the
-training features are consistent with the gate that admitted the pair.
-
-2026-08-12: pair floor raised from 8 to MIN_PAIRS_PER_SUBJECT (20).
-Per-subject partition and structural n≤p still missing on this path.
+Exit codes: 0 ok · 1 usage/data/disabled · 2 dependency/DB/IO failure
 """
 
 from __future__ import annotations
@@ -41,6 +40,20 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+
+# ---------------------------------------------------------------------------
+# Hard disable — do not remove the early exit until per-subject pair counts
+# are in four figures and a derived (not hardcoded) floor is in place.
+# ---------------------------------------------------------------------------
+MLP_PATH_DISABLED = True
+MLP_DISABLE_REASON = (
+    "MLP/Hailo train path DISABLED at pilot scale (2026-08-13 ASK 10). "
+    "Default 17→32→16→1 has 1121 free parameters; defensible training needs "
+    "thousands of pairs PER SUBJECT (n ≫ p). Two-person pilot will not reach "
+    "that this year. Path stays in tree for future data volume; do not train "
+    "or deploy until then. When re-enabled, any floor must be DERIVED from "
+    "actual layer widths at train time — no hardcoded MIN_PAIRS in this file."
+)
 
 FEATURE_KEYS = [
     "filt940_mean",
@@ -163,6 +176,12 @@ def _load_pairs_csv(path: Path):
     return df
 
 
+def _param_count(n_in: int, hidden: int) -> int:
+    """Free parameters for the default Sequential used below."""
+    h2 = max(2, hidden // 2)
+    return (n_in * hidden + hidden) + (hidden * h2 + h2) + (h2 * 1 + 1)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train tiny MLP → ONNX for Hailo path")
     parser.add_argument("--from-db", action="store_true", help="Build pairs from SQLite")
@@ -192,6 +211,17 @@ def main() -> int:
     )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    # ---- Hard disable (ASK 10) ---------------------------------------------
+    if MLP_PATH_DISABLED:
+        n_in = len(FEATURE_KEYS)
+        p = _param_count(n_in, args.hidden)
+        print(
+            f"ERROR: {MLP_DISABLE_REASON}\n"
+            f"  (this invocation: n_in={n_in} hidden={args.hidden} → {p} free parameters)",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.epochs < 1 or args.hidden < 2:
         print("ERROR: --epochs >= 1 and --hidden >= 2 required", file=sys.stderr)
@@ -236,23 +266,20 @@ def main() -> int:
             print(f"ERROR: failed to load pairs: {e}", file=sys.stderr)
         return 2
 
-    # Floor: align with MIN_PAIRS_PER_SUBJECT used by the OLS path.
-    # A 17-input MLP with hidden=32 has far more free parameters than OLS;
-    # n=8 was never a defensible bar. There is still no structural n≤p or
-    # per-subject partition on this path — that remains an open gap.
-    try:
-        from armband_ai.models import MIN_PAIRS_PER_SUBJECT
-        min_pairs = MIN_PAIRS_PER_SUBJECT
-    except Exception:
-        min_pairs = 20
+    # If the disable is ever lifted, the floor must be DERIVED from the
+    # actual architecture, not imported as a constant from models.py.
+    # Example (not active while DISABLED):
+    #   p = _param_count(len(FEATURE_KEYS), args.hidden)
+    #   min_pairs = max(p * 5, 100)   # illustrative multiple; choose deliberately
+    n_in = len(FEATURE_KEYS)
+    p = _param_count(n_in, args.hidden)
+    min_pairs = p * 5  # placeholder only — path is disabled above
 
     if pairs is None or len(pairs) < min_pairs:
         n = 0 if pairs is None else len(pairs)
         print(
-            f"ERROR: need >= {min_pairs} quality-gated pairs for MLP/HEF training "
-            f"(got {n}). Same floor as OLS MIN_PAIRS_PER_SUBJECT. "
-            f"Note: this path still lacks per-subject partition and structural "
-            f"n≤p; do not treat a passing train as production-ready at pilot scale.",
+            f"ERROR: need >= {min_pairs} quality-gated pairs for this architecture "
+            f"(p={p} free params × 5; got {n}). Per-subject partition still required.",
             file=sys.stderr,
         )
         return 1
@@ -273,7 +300,6 @@ def main() -> int:
     Xn = (X - mean) / std
 
     torch.manual_seed(args.seed)
-    n_in = len(FEATURE_KEYS)
 
     class MLP(nn.Module):
         def __init__(self):

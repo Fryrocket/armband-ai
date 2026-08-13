@@ -5,6 +5,17 @@
 
 This is the CPU stand-in until a Hailo HEF quality / artifact model exists.
 Score is 0..100. Higher = better for calibration and glucose estimation.
+
+Hard invalidation (ASK 12, 2026-08-13)
+--------------------------------------
+A window with *no* valid bpm samples (bpm > 0) or *no* valid spo2 samples
+(spo2 >= 0) is refused at the gate: score=0, label=poor, reasons include
+`no_valid_bpm` and/or `no_valid_spo2`. Feature extraction still invents
+0.0 for the fixed-width vector; only this gate can refuse the window so
+the invented number never reaches a model as a "measurement".
+
+These refusals are counted by callers (build_calibration_pairs logs them)
+because the rate during S001 is diagnostic of band fit.
 """
 
 from __future__ import annotations
@@ -23,6 +34,7 @@ class QualityResult:
     label: str                   # poor | fair | good | excellent
     reasons: list[str]
     features: dict
+    hard_invalid: bool = False   # True when gate refused (no_valid_bpm / spo2)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -39,9 +51,43 @@ def _label(score: float) -> str:
 
 
 def score_window(feats: WindowFeatures) -> QualityResult:
-    """Heuristic quality from one feature window."""
-    score = 100.0
+    """Heuristic quality from one feature window.
+
+    Hard-fails (score=0, hard_invalid=True) when the window has zero valid
+    bpm samples or zero valid spo2 samples. Those windows never produce a
+    usable calibration pair or inference estimate.
+    """
     reasons: list[str] = []
+    n_valid_bpm = int(getattr(feats, "n_valid_bpm", -1))
+    n_valid_spo2 = int(getattr(feats, "n_valid_spo2", -1))
+
+    # ---- ASK 12 hard invalidation -----------------------------------------
+    # Prefer the explicit counts from features.py. Fall back to the mean
+    # only if an older WindowFeatures without the new fields is passed.
+    if n_valid_bpm < 0:
+        n_valid_bpm = 1 if feats.bpm_mean > 0 else 0
+    if n_valid_spo2 < 0:
+        n_valid_spo2 = 1 if feats.spo2_mean > 0 else 0
+
+    hard = False
+    if n_valid_bpm == 0:
+        reasons.append("no_valid_bpm")
+        hard = True
+    if n_valid_spo2 == 0:
+        reasons.append("no_valid_spo2")
+        hard = True
+
+    if hard:
+        return QualityResult(
+            score=0.0,
+            label="poor",
+            reasons=reasons,
+            features=feats.to_dict(),
+            hard_invalid=True,
+        )
+
+    # ---- Soft heuristics --------------------------------------------------
+    score = 100.0
 
     # Motion dominates PPG / 940 nm quality
     if feats.still_fraction < 0.5:
@@ -111,7 +157,7 @@ def score_window(feats: WindowFeatures) -> QualityResult:
         score -= pen
         reasons.append(f"elevated filt940 slope={feats.filt940_slope:.2f} (-{pen:.0f})")
 
-    # BPM sanity (optional soft penalty)
+    # BPM sanity (optional soft penalty) — only when we have valid samples
     if feats.bpm_mean > 0:
         if feats.bpm_mean < 40 or feats.bpm_mean > 200:
             score -= 10.0
@@ -129,6 +175,7 @@ def score_window(feats: WindowFeatures) -> QualityResult:
         label=_label(score),
         reasons=reasons,
         features=feats.to_dict(),
+        hard_invalid=False,
     )
 
 

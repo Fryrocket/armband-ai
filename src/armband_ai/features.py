@@ -6,6 +6,16 @@ These features are the bridge between the MQTT logger and any future model
 The default 17-float vector order is frozen for Hailo MLP / HEF training.
 Extra diagnostic fields (max_clean_streak, clean_fraction) live on
 WindowFeatures but are not part of that vector unless callers request them.
+
+Sentinel policy (2026-08-12 / 13)
+---------------------------------
+Firmware emits bpm=0 (or NULL) and spo2<0 when the finger/contact is absent.
+Feature extraction *filters* those sentinels so averages are not pulled to
+zero, but a fixed-width vector still needs a number in every slot. When a
+window has *no* valid bpm samples or *no* valid spo2 samples the invented
+0.0 is a lie. Only the quality gate can refuse the window (see quality.py
+ASK 12 hard invalidation). extract_window_features still returns the
+numbers for diagnostics; score_window hard-fails those cases.
 """
 
 from __future__ import annotations
@@ -43,6 +53,8 @@ class WindowFeatures:
     bpm_std: float
     spo2_mean: float              # ignores invalid (<0) values
     # bpm_mean / bpm_std ignore non-positive (no-finger / not-yet) samples
+    n_valid_bpm: int              # count of bpm > 0 in the window (gate uses this)
+    n_valid_spo2: int             # count of spo2 >= 0 in the window (gate uses this)
     temp_mean: float
 
     # Motion
@@ -93,9 +105,12 @@ def _safe_mean(series: pd.Series) -> float:
     return float(s.mean()) if len(s) else 0.0
 
 
-def _safe_std(series: pd.Series) -> float:
+def _safe_std(series: pd.Series, ddof: int = 1) -> float:
+    """Sample std (ddof=1) by default — features feed a fit."""
     s = pd.to_numeric(series, errors="coerce").dropna()
-    return float(s.std()) if len(s) > 1 else 0.0
+    if len(s) <= ddof:
+        return 0.0
+    return float(s.std(ddof=ddof))
 
 
 def _safe_minmax(series: pd.Series) -> tuple[float, float]:
@@ -183,7 +198,12 @@ def _clean_streak_metrics(
 
 
 def extract_window_features(df: pd.DataFrame) -> Optional[WindowFeatures]:
-    """Build WindowFeatures from a DataFrame of PPG rows (oldest → newest)."""
+    """Build WindowFeatures from a DataFrame of PPG rows (oldest → newest).
+
+    Always returns numbers (including 0.0 for empty valid sets). Callers that
+    need to *refuse* a window with no valid bpm or spo2 must use the quality
+    gate (score_window / score_dataframe), which hard-fails those cases.
+    """
     if df is None or df.empty:
         return None
 
@@ -207,15 +227,19 @@ def extract_window_features(df: pd.DataFrame) -> Optional[WindowFeatures]:
     # SpO2: ignore invalid (< 0) from firmware
     spo2 = pd.to_numeric(work.get("spo2", pd.Series(dtype=float)), errors="coerce")
     spo2_valid = spo2[spo2 >= 0]
-    spo2_mean = float(spo2_valid.mean()) if len(spo2_valid) else 0.0
+    n_valid_spo2 = int(len(spo2_valid))
+    spo2_mean = float(spo2_valid.mean()) if n_valid_spo2 else 0.0
 
     # BPM: ignore non-positive (firmware 0 / insert NULL for no-finger).
     # Without this filter a loose band produces bpm_mean near 0 and the model
-    # treats it as signal.
+    # treats it as signal. When n_valid_bpm == 0 the gate must refuse the window.
     bpm = pd.to_numeric(work.get("bpm", pd.Series(dtype=float)), errors="coerce")
     bpm_valid = bpm[bpm > 0]
-    bpm_mean = float(bpm_valid.mean()) if len(bpm_valid) else 0.0
-    bpm_std = float(bpm_valid.std()) if len(bpm_valid) > 1 else 0.0
+    n_valid_bpm = int(len(bpm_valid))
+    bpm_mean = float(bpm_valid.mean()) if n_valid_bpm else 0.0
+    # Sample std (ddof=1). Single valid sample → 0.0 (gate may still accept
+    # on other grounds, but a one-sample "perfectly steady" pulse is weak).
+    bpm_std = float(bpm_valid.std(ddof=1)) if n_valid_bpm > 1 else 0.0
 
     moving = work.get("moving")
     if moving is not None:
@@ -244,6 +268,8 @@ def extract_window_features(df: pd.DataFrame) -> Optional[WindowFeatures]:
         bpm_mean=bpm_mean,
         bpm_std=bpm_std,
         spo2_mean=spo2_mean,
+        n_valid_bpm=n_valid_bpm,
+        n_valid_spo2=n_valid_spo2,
         temp_mean=_safe_mean(work.get("temp", pd.Series(dtype=float))),
         motion_mean=_safe_mean(work.get("motion", pd.Series(dtype=float))),
         motion_max=float(
