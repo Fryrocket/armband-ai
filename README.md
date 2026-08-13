@@ -3,13 +3,13 @@
 > **Part of [BGM](https://github.com/Fryrocket/BGM)** – the umbrella wearable blood-glucose monitoring project.  
 > Wearable firmware companion: **[armband-ppg-940nm](https://github.com/Fryrocket/armband-ppg-940nm)**.
 
-**v0.5.0** – Subject_ID / per-subject fits, homogeneity gate, structural n ≤ p bar for multi-feature OLS (p=10), drift monitor, insert-time soft validation, consecutive-clean streak gates, Hailo path, MLP→ONNX trainer.
+**v0.5.1** – Subject_ID / per-subject fits, homogeneity gate, structural n ≤ p bar for multi-feature OLS (p=10), hard invalidation of empty bpm/spo2 windows (ASK 12), **MLP/Hailo train path DISABLED at pilot scale** (1121 params; needs thousands of pairs/subject — ASK 10).
 
 | Doc | Purpose |
 |-----|---------|
 | **[HARDWARE.md](HARDWARE.md)** | BOM: Pi, AI HAT, armband, boot SSD |
 | **[docs/HAILO_DRIVER.md](docs/HAILO_DRIVER.md)** | Driver / firmware / HailoRT install & diagnose |
-| **[docs/HAILO_MODEL.md](docs/HAILO_MODEL.md)** | Train MLP → ONNX → DFC HEF → deploy on Pi |
+| **[docs/HAILO_MODEL.md](docs/HAILO_MODEL.md)** | Train MLP → ONNX → DFC HEF → deploy on Pi (**path disabled**) |
 | **[docs/PIPELINE.md](docs/PIPELINE.md)** | MQTT → DB → features → quality → models → Hailo |
 | **[docs/LIBRE_FLOW.md](docs/LIBRE_FLOW.md)** | How to log Libre/fingerstick references |
 | **[docs/GIT_AUTO_PULL.md](docs/GIT_AUTO_PULL.md)** | Auto-pull exit codes & error-handling examples |
@@ -17,7 +17,7 @@
 
 ## SpO₂ convention
 
-PPG `spo2` is an integer percent. **Values < 0 (usually `-1`) mean invalid / not computed** and are ignored in feature averages. Schema and firmware may still carry the field for when SpO₂ is re-enabled on the armband.
+PPG `spo2` is an integer percent. **Values < 0 (usually `-1`) mean invalid / not computed** and are ignored in feature averages. Schema and firmware may still carry the field for when SpO₂ is re-enabled on the armband. Windows with **zero** valid spo2 (or zero valid bpm) are hard-refused by the quality gate (ASK 12).
 
 ## Hailo-8 driver (short path)
 
@@ -37,18 +37,11 @@ python scripts/hailo_identify.py --extended --save models/hailo_device.json
 
 Silicon (photos): industrial **Hailo-8 / HNC18BI11BH (26 TOPS)** — confirm with `Device Architecture`.
 
-### Hailo model path (optional)
+### Hailo model path — DISABLED at pilot scale
 
-CPU baseline / multi-feature work without an HEF. To run a neural net on the NPU:
+CPU baseline / multi-feature work without an HEF. The MLP train path is **off** until per-subject pair counts reach four figures (default architecture has 1121 free parameters). See **[docs/HAILO_MODEL.md](docs/HAILO_MODEL.md)**.
 
-1. Collect quality-gated Libre pairs
-2. `python scripts/train_mlp_onnx.py --from-db --min-quality 60` → ONNX + norm JSON
-3. Compile ONNX → HEF on **x86_64** with Hailo DFC (`hw_arch=hailo8`)
-4. Set `hailo.hef_path` (and optional `norm_path`) in `config.yaml`
-
-Full checklist: **[docs/HAILO_MODEL.md](docs/HAILO_MODEL.md)**.
-
-Inference priority: **Hailo HEF → CPU multifeature → CPU baseline → quality-only**.
+Inference priority (when a HEF exists): **Hailo HEF → CPU multifeature → CPU baseline → quality-only**.
 
 ## What runs on the Pi
 
@@ -96,8 +89,8 @@ See **[docs/LIBRE_FLOW.md](docs/LIBRE_FLOW.md)**.
 python scripts/log_glucose.py 142 --notes "still"
 python scripts/calibrate.py --min-quality 60 --min-still 0.7 --min-clean-streak 12
 python scripts/train_multifeature.py --min-quality 60 --min-clean-streak 12
-# optional neural path:
-python scripts/train_mlp_onnx.py --from-db --min-quality 60
+# MLP path currently refuses (DISABLED):
+# python scripts/train_mlp_onnx.py --from-db --min-quality 60
 ```
 
 ## File index
@@ -108,12 +101,12 @@ python scripts/train_mlp_onnx.py --from-db --min-quality 60
 - [src/armband_ai/config.py](src/armband_ai/config.py) — YAML config loading and defaults
 - [src/armband_ai/db.py](src/armband_ai/db.py) — SQLite writes, insert-time soft validation
 - [src/armband_ai/drift_monitor.py](src/armband_ai/drift_monitor.py) — still-only rolling median of filt940 vs baseline
-- [src/armband_ai/features.py](src/armband_ai/features.py) — 17-float feature vector, clean streak
+- [src/armband_ai/features.py](src/armband_ai/features.py) — 17-float feature vector, clean streak, n_valid_bpm/spo2
 - [src/armband_ai/hailo.py](src/armband_ai/hailo.py) — Hailo HEF inference path
 - [src/armband_ai/inference_service.py](src/armband_ai/inference_service.py) — CPU/MLP/ONNX/Hailo priority
 - [src/armband_ai/logger.py](src/armband_ai/logger.py) — MQTT logger, iOS batch receiver + ACK
 - [src/armband_ai/models.py](src/armband_ai/models.py)
-- [src/armband_ai/quality.py](src/armband_ai/quality.py) — raw-window quality gates
+- [src/armband_ai/quality.py](src/armband_ai/quality.py) — raw-window quality gates + hard invalidation
 - [src/armband_ai/queries.py](src/armband_ai/queries.py) — read helpers, init_db
 
 **Dashboard**
@@ -143,7 +136,7 @@ python scripts/train_mlp_onnx.py --from-db --min-quality 60
 - [scripts/run_inference.py](scripts/run_inference.py)
 - [scripts/run_logger.py](scripts/run_logger.py)
 - [scripts/run_quality.py](scripts/run_quality.py)
-- [scripts/train_mlp_onnx.py](scripts/train_mlp_onnx.py)
+- [scripts/train_mlp_onnx.py](scripts/train_mlp_onnx.py) — **DISABLED**
 - [scripts/train_multifeature.py](scripts/train_multifeature.py)
 - [scripts/update_file_index.py](scripts/update_file_index.py)
 
