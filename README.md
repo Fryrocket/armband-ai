@@ -101,12 +101,12 @@ python scripts/train_multifeature.py --min-quality 60 --min-clean-streak 12
 - [src/armband_ai/config.py](src/armband_ai/config.py) — YAML config loading and defaults
 - [src/armband_ai/db.py](src/armband_ai/db.py) — SQLite writes, insert-time soft validation
 - [src/armband_ai/drift_monitor.py](src/armband_ai/drift_monitor.py) — still-only rolling median of filt940 vs baseline
-- [src/armband_ai/features.py](src/armband_ai/features.py) — 17-float feature vector, clean streak, n_valid_bpm/spo2
+- [src/armband_ai/features.py](src/armband_ai/features.py) — 17-float feature vector, clean streak
 - [src/armband_ai/hailo.py](src/armband_ai/hailo.py) — Hailo HEF inference path
 - [src/armband_ai/inference_service.py](src/armband_ai/inference_service.py) — CPU/MLP/ONNX/Hailo priority
 - [src/armband_ai/logger.py](src/armband_ai/logger.py) — MQTT logger, iOS batch receiver + ACK
 - [src/armband_ai/models.py](src/armband_ai/models.py)
-- [src/armband_ai/quality.py](src/armband_ai/quality.py) — raw-window quality gates + hard invalidation
+- [src/armband_ai/quality.py](src/armband_ai/quality.py) — raw-window quality gates
 - [src/armband_ai/queries.py](src/armband_ai/queries.py) — read helpers, init_db
 
 **Dashboard**
@@ -136,7 +136,7 @@ python scripts/train_multifeature.py --min-quality 60 --min-clean-streak 12
 - [scripts/run_inference.py](scripts/run_inference.py)
 - [scripts/run_logger.py](scripts/run_logger.py)
 - [scripts/run_quality.py](scripts/run_quality.py)
-- [scripts/train_mlp_onnx.py](scripts/train_mlp_onnx.py) — **DISABLED**
+- [scripts/train_mlp_onnx.py](scripts/train_mlp_onnx.py)
 - [scripts/train_multifeature.py](scripts/train_multifeature.py)
 - [scripts/update_file_index.py](scripts/update_file_index.py)
 
