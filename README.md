@@ -120,6 +120,7 @@ python scripts/train_multifeature.py --min-quality 60 --min-clean-streak 12
 - [docs/LIBRE_FLOW.md](docs/LIBRE_FLOW.md)
 - [docs/LOG_ROTATION.md](docs/LOG_ROTATION.md)
 - [docs/PIPELINE.md](docs/PIPELINE.md)
+- [docs/STATUS.md](docs/STATUS.md)
 
 **Scripts**
 - [scripts/calibrate.py](scripts/calibrate.py)
